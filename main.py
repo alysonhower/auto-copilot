@@ -3,35 +3,31 @@ import json
 import random
 import re
 from pathlib import Path
-from typing import List
+from typing import List, Tuple
 
+import click
 from openpyxl import Workbook, load_workbook
 
 from pydoll.browser.chromium import Chrome
 from pydoll.browser.options import ChromiumOptions
 
-# Persistent cookies file (stores login sessions)
+# Arquivo persistente de cookies
 COOKIE_FILE = Path(__file__).parent / '.cookies.json'
 
-# Global lock for Excel writing to prevent race conditions
+# Lock global para escrita no Excel
 EXCEL_LOCK = asyncio.Lock()
 
-# List of files to process
-FILES_TO_PROCESS = [
-    Path(r"C:\Users\AlysonhowerVerasViei\Downloads\markdown.md"),
-    Path(r"C:\Users\AlysonhowerVerasViei\Downloads\1859\2. RKO Alimentos\Anexo 32 - Extrato Fundo Titânia.pdf"),
-    Path(r"C:\Users\AlysonhowerVerasViei\Downloads\1859\2. RKO Alimentos\Anexo 36 - despacho-dicol-assinado.pdf")
-]
+# Extensões suportadas
+SUPPORTED_EXTENSIONS = {'.xlsx', '.xls', '.md', '.txt', '.pdf', '.docx', '.jpg', '.jpeg', '.png'}
 
 async def load_cookies(tab):
-    """Load saved cookies to restore login session."""
+    """Carrega cookies salvos para restaurar a sessão de login."""
     if not COOKIE_FILE.exists():
         return False
     
     try:
         saved_cookies = json.loads(COOKIE_FILE.read_text(encoding='utf-8'))
         
-        # Convert to simplified format (only settable fields)
         simplified_cookies = []
         for cookie in saved_cookies:
             simplified = {
@@ -47,25 +43,25 @@ async def load_cookies(tab):
             simplified_cookies.append(simplified)
         
         await tab.set_cookies(simplified_cookies)
-        print(f"Loaded {len(simplified_cookies)} cookies from {COOKIE_FILE}")
+        click.echo(f"Carregados {len(simplified_cookies)} cookies de {COOKIE_FILE}")
         return True
     except Exception as e:
-        print(f"Error loading cookies: {e}")
+        click.echo(f"Erro ao carregar cookies: {e}", err=True)
         return False
 
 
 async def save_cookies(browser):
-    """Save cookies after successful login for future use."""
+    """Salva cookies após login bem-sucedido."""
     try:
         cookies = await browser.get_cookies()
         COOKIE_FILE.write_text(json.dumps(cookies, indent=2), encoding='utf-8')
-        print(f"Saved {len(cookies)} cookies to {COOKIE_FILE}")
+        click.echo(f"Salvos {len(cookies)} cookies em {COOKIE_FILE}")
     except Exception as e:
-        print(f"Error saving cookies: {e}")
+        click.echo(f"Erro ao salvar cookies: {e}", err=True)
 
 
 def parse_copilot_response(text: str, filename: str = '') -> dict:
-    """Extract contents from <data>, <resumo>, and <objeto> tags."""
+    """Extrai conteúdo das tags <data>, <resumo>, e <objeto>."""
     tags = ['data', 'resumo', 'objeto']
     result = {'Correspondência': filename}
     
@@ -78,7 +74,7 @@ def parse_copilot_response(text: str, filename: str = '') -> dict:
 
 
 def append_to_excel(data: dict, filepath: Path):
-    """Append data to Excel file, creating it with headers if it doesn't exist."""
+    """Adiciona dados ao arquivo Excel, criando-o se não existir."""
     headers = list(data.keys())
     
     if filepath.exists():
@@ -93,36 +89,37 @@ def append_to_excel(data: dict, filepath: Path):
     wb.save(filepath)
 
 
-
 async def interact_and_send(tab, file_path: Path):
     """
-    Performs the interaction up to clicking 'Send'.
-    Returns True if successful, False otherwise.
+    Realiza a interação até clicar em 'Enviar'.
+    Retorna True se bem-sucedido, False caso contrário.
     """
     filename = file_path.name
-    print(f"Starting interaction for: {filename}")
+    click.echo(f"Iniciando interação para: {filename}")
 
     try:
-        # Navigate if needed (on new tabs or first run)
-        # Check if we are already on the correct page to avoid unnecessary reloads if possible,
-        # but for safety/consistency, ensuring the URL is correct is good.
+        # Navega se necessário
         current_url = await tab.current_url
         if "m365.cloud.microsoft/chat" not in current_url:
             await tab.go_to('https://m365.cloud.microsoft/chat')
             await asyncio.sleep(random.uniform(2.0, 4.0))
 
-        # === FILE ATTACHMENT ===
-        # Click the plus menu button
-        plus_menu_btn = await tab.find(data_testid="PlusMenuButton", timeout=10)
-        await plus_menu_btn.click(
-            x_offset=random.randint(-5, 5),
-            y_offset=random.randint(-5, 5),
-            hold_time=random.uniform(0.08, 0.15)
-        )
+        # === ANEXAR ARQUIVO ===
+        try:
+            plus_menu_btn = await tab.find(data_testid="PlusMenuButton", timeout=10)
+            await plus_menu_btn.click(
+                x_offset=random.randint(-5, 5),
+                y_offset=random.randint(-5, 5),
+                hold_time=random.uniform(0.08, 0.15)
+            )
+        except Exception:
+             # Tenta recuperar se o menu não abrir ou já estiver aberto?
+             # Por simplicidade, assume erro se não achar.
+             # Se falhar aqui, pode ser que a página não carregou direito.
+             raise
 
         await asyncio.sleep(random.uniform(0.3, 0.8))
 
-        # Attach file
         async with tab.expect_file_chooser(files=[file_path]):
             upload_menu_item = await tab.find(text="Carregar imagens e arquivos", timeout=5)
             await upload_menu_item.click(
@@ -131,10 +128,9 @@ async def interact_and_send(tab, file_path: Path):
                 hold_time=random.uniform(0.08, 0.15)
             )
 
-        # Wait for file processing
         await asyncio.sleep(random.uniform(1.0, 2.0))
 
-        # Focus chat
+        # Focar chat
         chat_input = await tab.find(aria_label="Copilot de Mensagens", timeout=10)
         await chat_input.click(
             x_offset=random.randint(-5, 5),
@@ -144,13 +140,13 @@ async def interact_and_send(tab, file_path: Path):
         
         await asyncio.sleep(random.uniform(0.3, 0.8))
 
-        # Type message
+        # Digitar mensagem
         message = r"Analise o documento em anexo e execute as três tarefas a seguir: 1. Identifique a data do documento (se existir), no formato DD/MM/AAAA (dia/mês/ano). Se não existir deixe em branco; 2. Produza um resumo em um único parágrafo, claro e objetivo; 3. Em seguida, identifique e destaque o objeto central do documento em uma única sentença curta, no estilo punchline (poucas palavras, direto ao ponto, refletindo o cerne do conteúdo). Retorne estritamente neste formato: `<data>[Data do documento ou vazio se não existir]</data><resumo>[Resumo em um único parágrafo]</resumo><objeto>[Objeto central do documento]</objeto>"
         await chat_input.type_text(message, humanize=True)
 
         await asyncio.sleep(random.uniform(0.5, 1.5))
 
-        # Click Send
+        # Clicar Enviar
         send_button = await tab.find(aria_label="Enviar", timeout=5)
         await send_button.click(
             x_offset=random.randint(-5, 5),
@@ -158,29 +154,28 @@ async def interact_and_send(tab, file_path: Path):
             hold_time=random.uniform(0.09, 0.18)
         )
         
-        print(f"Sent request for {filename}.")
+        click.echo(f"Solicitação enviada para {filename}.")
         return True
 
     except Exception as e:
-        print(f"Error during interaction for {filename}: {e}")
+        click.echo(f"Erro durante interação para {filename}: {e}", err=True)
         return False
 
 
 async def wait_and_save(tab, file_path: Path):
     """
-    Waits for the response in an already active tab and saves it.
+    Aguarda a resposta em uma aba já ativa e salva no Excel.
     """
     filename = file_path.name
-    print(f"Waiting for response for: {filename} in background...")
+    click.echo(f"Aguardando resposta para: {filename} em segundo plano...")
 
     try:
-        # Wait for valid response (Copy Button)
+        # Aguarda botão de copiar (indica fim da geração)
         copy_button = await tab.find(
             data_testid="CopyButtonTestId",
             timeout=180 
         )
 
-        # Human-like delay before copying
         await asyncio.sleep(random.uniform(0.5, 1.0))
 
         await copy_button.click(
@@ -191,7 +186,7 @@ async def wait_and_save(tab, file_path: Path):
 
         await asyncio.sleep(random.uniform(0.3, 0.5))
 
-        # Retrieve text
+        # Ler clipboard
         clipboard_result = await tab.execute_script(
             "return navigator.clipboard.readText()", 
             await_promise=True
@@ -200,7 +195,7 @@ async def wait_and_save(tab, file_path: Path):
         try:
             response_text = clipboard_result['result']['result']['value']
         except (KeyError, TypeError) as e:
-            print(f"Warning: Unexpected clipboard structure for {filename}: {e}")
+            click.echo(f"Aviso: Estrutura inesperada do clipboard para {filename}: {e}", err=True)
             response_text = ""
 
         if response_text:
@@ -212,22 +207,53 @@ async def wait_and_save(tab, file_path: Path):
             
             async with EXCEL_LOCK:
                 append_to_excel(parsed_data, output_file)
-                print(f"✅ Results for {filename} saved to {output_file}")
+                click.echo(f"✅ Resultados para {filename} salvos em {output_file}")
         else:
-            print(f"❌ No response content obtained for {filename}")
+            click.echo(f"❌ Nenhum conteúdo obtido na resposta para {filename}", err=True)
 
     except Exception as e:
-        print(f"Error waiting for response for {filename}: {e}")
+        click.echo(f"Erro aguardando resposta para {filename}: {e}", err=True)
 
 
-async def copilot_chat_automation():
-    """Main automation flow with sequential initiation and parallel waiting."""
+def resolve_paths(paths: Tuple[str]) -> List[Path]:
+    """
+    Resolve caminhos fornecidos (arquivos e diretórios) para uma lista de arquivos.
+    Busca recursivamente em diretórios por extensões suportadas.
+    """
+    files_to_process = []
+    
+    for path_str in paths:
+        path = Path(path_str)
+        if not path.exists():
+            click.echo(f"Aviso: Caminho não encontrado ignorado: {path}", err=True)
+            continue
+            
+        if path.is_file():
+            if path.suffix.lower() in SUPPORTED_EXTENSIONS:
+                files_to_process.append(path)
+            else:
+                click.echo(f"Aviso: Extensão não suportada ignorada: {path.name}", err=True)
+        
+        elif path.is_dir():
+            click.echo(f"Escaneando diretório: {path}")
+            for item in path.rglob('*'):
+                if item.is_file() and item.suffix.lower() in SUPPORTED_EXTENSIONS:
+                    files_to_process.append(item)
+    
+    return files_to_process
+
+
+async def process_files_logic(files: List[Path]):
+    """Lógica principal de orquestração do navegador."""
+    if not files:
+        click.echo("Nenhum arquivo válido encontrado para processar.")
+        return
+
     options = ChromiumOptions()
     options.block_notifications = True
     options.block_popups = True
 
     async with Chrome(options=options) as browser:
-        # Initialize browser and cookies
         first_tab = await browser.start()
         
         try:
@@ -236,47 +262,64 @@ async def copilot_chat_automation():
                 origin='https://m365.cloud.microsoft'
             )
         except Exception as e:
-            print(f"Warning: Could not grant permissions: {e}")
+            click.echo(f"Aviso: Não foi possível conceder permissões: {e}", err=True)
 
         await load_cookies(first_tab)
         
         waiting_tasks = []
         
-        for i, file_path in enumerate(FILES_TO_PROCESS):
-            if not file_path.exists():
-                print(f"Error: File not found: {file_path}")
-                continue
+        click.echo(f"Iniciando processamento de {len(files)} arquivos...")
 
-            # Determine which tab to use
+        for i, file_path in enumerate(files):
+            # Determina qual aba usar
             if i == 0:
                 tab = first_tab
             else:
-                # Open new tab for subsequent files
-                print(f"Opening new tab for {file_path.name}...")
+                click.echo(f"Abrindo nova aba para {file_path.name}...")
                 tab = await browser.new_tab()
             
-            # 1. SEQUENTIAL PART: Interact and Send
-            # We await this, so the next file only starts processing after this one is sent.
+            # 1. PARTE SEQUENCIAL: Interagir e Enviar
             success = await interact_and_send(tab, file_path)
             
             if success:
-                # 2. PARALLEL PART: Wait for response
-                # We schedule this task but do not await it immediately.
-                # It runs in the background while the main loop initiates the next file.
+                # 2. PARTE PARALELA: Aguardar resposta
                 task = asyncio.create_task(wait_and_save(tab, file_path))
                 waiting_tasks.append(task)
             else:
-                print(f"Skipping wait for {file_path.name} due to send failure.")
+                click.echo(f"Pulando espera para {file_path.name} devido a falha no envio.", err=True)
                 if tab != first_tab:
                     await tab.close()
 
-        # After all files have been initiated, wait for all responses to complete
         if waiting_tasks:
-            print("All prompts sent. Waiting for all responses to complete...")
+            click.echo("Todas as solicitações enviadas. Aguardando respostas...")
             await asyncio.gather(*waiting_tasks)
 
         await save_cookies(browser)
-        input("Processamento concluído. Pressione Enter para fechar o navegador...")
+        click.echo("Pressione Enter para fechar o navegador...")
+        input()
+
+
+@click.command()
+@click.argument('paths', nargs=-1, type=click.Path(exists=True))
+def main(paths):
+    """
+    Auto-Copilot CLI.
+    
+    Processa arquivos usando o Microsoft 365 Copilot e salva os resultados em Excel.
+    
+    PATHS: Caminhos para arquivos ou diretórios a serem processados.
+           Diretórios são escaneados recursivamente por arquivos suportados
+           (.xlsx, .xls, .md, .txt, .pdf, .docx, .jpg, .jpeg, .png).
+    """
+    files = resolve_paths(paths)
+    
+    if not files:
+        click.echo("Por favor, forneça pelo menos um arquivo ou diretório válido.")
+        return
+
+    # Executa o loop assíncrono
+    asyncio.run(process_files_logic(files))
+
 
 if __name__ == "__main__":
-    asyncio.run(copilot_chat_automation())
+    main()
