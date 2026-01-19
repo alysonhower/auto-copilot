@@ -6,4 +6,5 @@ readme = "README.md"
 requires-python = ">=3.14"
 dependencies = [
     "pydoll-python>=2.15.1",
+    "openpyxl>=3.1.0",
 ]

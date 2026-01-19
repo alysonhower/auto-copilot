@@ -1,7 +1,10 @@
 import asyncio
 import json
 import random
+import re
 from pathlib import Path
+
+from openpyxl import Workbook, load_workbook
 
 from pydoll.browser.chromium import Chrome
 from pydoll.browser.options import ChromiumOptions
@@ -54,6 +57,42 @@ async def save_cookies(browser):
         print(f"Error saving cookies: {e}")
 
 
+def parse_copilot_response(text: str, filename: str = '') -> dict:
+    """Extract contents from <data>, <resumo>, and <objeto> tags.
+    
+    Args:
+        text: The response text containing XML-like tags.
+        filename: The attachment filename (without extension) to include as first column.
+    """
+    tags = ['data', 'resumo', 'objeto']
+    # Start with Correspondência as the first column
+    result = {'Correspondência': filename}
+    
+    for tag in tags:
+        pattern = rf'<{tag}>(.*?)</{tag}>'
+        match = re.search(pattern, text, re.DOTALL | re.IGNORECASE)
+        # Capitalize tag name for header (Data, Resumo, Objeto)
+        result[tag.capitalize()] = match.group(1).strip() if match else ''
+    
+    return result
+
+
+def append_to_excel(data: dict, filepath: Path):
+    """Append data to Excel file, creating it with headers if it doesn't exist."""
+    headers = list(data.keys())
+    
+    if filepath.exists():
+        wb = load_workbook(filepath)
+        ws = wb.active
+    else:
+        wb = Workbook()
+        ws = wb.active
+        ws.append(headers)
+    
+    ws.append([data[h] for h in headers])
+    wb.save(filepath)
+
+
 async def copilot_chat_automation():
     """Type a message in Microsoft 365 Copilot chat and send it with human-like behavior."""
     # Configure Chrome with preferences
@@ -65,6 +104,15 @@ async def copilot_chat_automation():
 
     async with Chrome(options=options) as browser:
         tab = await browser.start()
+
+        # Grant clipboard permissions to avoid popup
+        try:
+            await browser.grant_permissions(
+                permissions=['clipboardReadWrite', 'clipboardSanitizedWrite'],
+                origin='https://m365.cloud.microsoft'
+            )
+        except Exception as e:
+            print(f"Warning: Could not grant permissions: {e}")
         
         # Load existing cookies to restore login session
         await load_cookies(tab)
@@ -118,27 +166,7 @@ async def copilot_chat_automation():
         await asyncio.sleep(random.uniform(0.3, 0.8))
 
         # Type message with humanized behavior (variable speed, occasional typos)
-        message = """Analise o documento em anexo e execute as três tarefas a seguir:
-
-1. Identifique a data do documento (se existir), no formato dd/mm/yyyy. Se não existir deixe em branco.
-2. Produza um resumo em um único parágrafo, claro e objetivo.
-3. Em seguida, identifique e destaque o objeto central do documento em uma única sentença curta, no estilo *punchline* (poucas palavras, direto ao ponto, refletindo o cerne do conteúdo).
-
-Retorne estritamente no formato abaixo:
-
-```markdown
-<data>
-[Data do documento ou vazio se não existir]
-</data>
-
-<resumo>
-[Resumo em um único parágrafo]
-</resumo>
-
-<objeto>
-[Objeto central do documento]
-</objeto>
-"""
+        message = r"Analise o documento em anexo e execute as três tarefas a seguir: 1. Identifique a data do documento (se existir), no formato dd/mm/yyyy. Se não existir deixe em branco; 2. Produza um resumo em um único parágrafo, claro e objetivo; 3. Em seguida, identifique e destaque o objeto central do documento em uma única sentença curta, no estilo punchline (poucas palavras, direto ao ponto, refletindo o cerne do conteúdo). Retorne estritamente neste formato: `<data>[Data do documento ou vazio se não existir]</data><resumo>[Resumo em um único parágrafo]</resumo><objeto>[Objeto central do documento]</objeto>"
         await chat_input.type_text(message, humanize=True)
 
         # Wait a bit after typing (human reaction time before clicking send)
@@ -162,37 +190,52 @@ Retorne estritamente no formato abaixo:
         # Using a long timeout since Copilot may take a while to process
         print("Aguardando resposta do Copilot...")
         
-        # Wait for the copy button to appear (indicates response is complete)
-        await tab.find(
-            aria_label="Copiar Resposta",
-            timeout=120,  # Wait up to 2 minutes for response
+        # Find the copy button (indicates response is complete)
+        copy_button = await tab.find(
+            data_testid="CopyButtonTestId",
+            timeout=120
         )
 
-        # Human-like delay before reading the response
-        await asyncio.sleep(random.uniform(0.5, 1.5))
-
-        # Find the response element using data-testid attribute
-        # Note: use data_testid (underscore) as keyword argument per Pydoll docs
-        response_element = await tab.find(
-            data_testid='lastChatMessage',
-            timeout=10
+        # Click the copy button to convert markdown to clipboard text
+        await copy_button.click(
+            x_offset=random.randint(-5, 5),
+            y_offset=random.randint(-3, 3),
+            hold_time=random.uniform(0.08, 0.15)
         )
 
-        # Get text content using Pydoll's native element.text property
-        response_text = await response_element.text
+        # Small wait for clipboard operation
+        await asyncio.sleep(random.uniform(0.3, 0.5))
+
+        # Retrieve text from clipboard
+        clipboard_result = await tab.execute_script(
+            "return navigator.clipboard.readText()", 
+            await_promise=True
+        )
+        
+        # Extract text from CDP response structure
+        # Structure: {'id': ..., 'result': {'result': {'type': 'string', 'value': '...'}}}
+        try:
+            response_text = clipboard_result['result']['result']['value']
+        except (KeyError, TypeError):
+            # Fallback for unexpected structures
+            print(f"Warning: Unexpected clipboard structure. Raw result: {clipboard_result}")
+            response_text = ""
 
         if response_text:
-            # Generate timestamped filename
-            from datetime import datetime
-            timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-            output_file = Path(__file__).parent / 'outputs' / f'copilot_response_{timestamp}.md'
+            # Parse response to extract tag contents
+            # Include filename (without extension) as first column "Correspondência"
+            attachment_name = file_path.stem  # Get filename without extension
+            parsed_data = parse_copilot_response(response_text, filename=attachment_name)
+            
+            # Define Excel output file
+            output_file = Path(__file__).parent / 'outputs' / 'copilot_responses.xlsx'
             
             # Ensure output directory exists
             output_file.parent.mkdir(parents=True, exist_ok=True)
             
-            # Save the response to markdown file
-            output_file.write_text(response_text, encoding='utf-8')
-            print(f"Resposta salva em: {output_file}")
+            # Append to Excel file (creates if doesn't exist)
+            append_to_excel(parsed_data, output_file)
+            print(f"Resposta adicionada em: {output_file}")
         else:
             print("Não foi possível obter o conteúdo da resposta.")
 
