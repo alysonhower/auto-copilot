@@ -166,7 +166,7 @@ async def copilot_chat_automation():
         await asyncio.sleep(random.uniform(0.3, 0.8))
 
         # Type message with humanized behavior (variable speed, occasional typos)
-        message = r"Analise o documento em anexo e execute as três tarefas a seguir: 1. Identifique a data do documento (se existir), no formato dd/mm/yyyy. Se não existir deixe em branco; 2. Produza um resumo em um único parágrafo, claro e objetivo; 3. Em seguida, identifique e destaque o objeto central do documento em uma única sentença curta, no estilo punchline (poucas palavras, direto ao ponto, refletindo o cerne do conteúdo). Retorne estritamente neste formato: `<data>[Data do documento ou vazio se não existir]</data><resumo>[Resumo em um único parágrafo]</resumo><objeto>[Objeto central do documento]</objeto>"
+        message = r"Analise o documento em anexo e execute as três tarefas a seguir: 1. Identifique a data do documento (se existir), no formato DD/MM/AAAA (dia/mês/ano). Se não existir deixe em branco; 2. Produza um resumo em um único parágrafo, claro e objetivo; 3. Em seguida, identifique e destaque o objeto central do documento em uma única sentença curta, no estilo punchline (poucas palavras, direto ao ponto, refletindo o cerne do conteúdo). Retorne estritamente neste formato: `<data>[Data do documento ou vazio se não existir]</data><resumo>[Resumo em um único parágrafo]</resumo><objeto>[Objeto central do documento]</objeto>"
         await chat_input.type_text(message, humanize=True)
 
         # Wait a bit after typing (human reaction time before clicking send)
