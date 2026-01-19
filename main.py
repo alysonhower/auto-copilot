@@ -75,6 +75,32 @@ async def copilot_chat_automation():
         # Human-like wait for page to load
         await asyncio.sleep(random.uniform(2.0, 4.0))
 
+        # === FILE ATTACHMENT ===
+        # Click the plus menu button to open attachment options
+        plus_menu_btn = await tab.find(data_testid="PlusMenuButton", timeout=10)
+        await plus_menu_btn.click(
+            x_offset=random.randint(-5, 5),
+            y_offset=random.randint(-5, 5),
+            hold_time=random.uniform(0.08, 0.15)
+        )
+
+        # Human-like wait for menu to appear
+        await asyncio.sleep(random.uniform(0.3, 0.8))
+
+        # Attach the file using file chooser context manager
+        file_path = Path(r"C:\Users\AlysonhowerVerasViei\Downloads\markdown.md")
+        
+        async with tab.expect_file_chooser(files=[file_path]):
+            upload_menu_item = await tab.find(text="Carregar imagens e arquivos", timeout=5)
+            await upload_menu_item.click(
+                x_offset=random.randint(-5, 5),
+                y_offset=random.randint(-3, 3),
+                hold_time=random.uniform(0.08, 0.15)
+            )
+
+        # Wait for file attachment to process
+        await asyncio.sleep(random.uniform(0.8, 1.5))
+
         # Find the chat input element using aria-label
         chat_input = await tab.find(
             aria_label="Copilot de Mensagens",
@@ -92,7 +118,22 @@ async def copilot_chat_automation():
         await asyncio.sleep(random.uniform(0.3, 0.8))
 
         # Type message with humanized behavior (variable speed, occasional typos)
-        message = "Olá!"
+        message = """Analise o documento em anexo e execute as duas tarefas abaixo:
+
+1. Produza um resumo em um único parágrafo, claro e objetivo.
+2. Em seguida, identifique e destaque o objeto central do documento em uma única sentença curta, no estilo *punchline* (poucas palavras, direto ao ponto, refletindo o cerne do conteúdo).
+
+Retorne exclusivamente no formato abaixo:
+
+```markdown
+<resumo>
+[Resumo em um único parágrafo]
+</resumo>
+
+<objeto>
+[Objeto central do documento]
+</objeto>
+"""
         await chat_input.type_text(message, humanize=True)
 
         # Wait a bit after typing (human reaction time before clicking send)
