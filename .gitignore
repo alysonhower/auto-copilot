@@ -12,3 +12,6 @@ wheels/
 # Chrome profile
 .chrome_profile
 
+# Output files
+outputs/
+

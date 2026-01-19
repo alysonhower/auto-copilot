@@ -60,8 +60,47 @@ async def copilot_chat_automation():
             hold_time=random.uniform(0.09, 0.18)
         )
 
-        # Wait to observe the result
-        await asyncio.sleep(random.uniform(2.0, 4.0))
+        # Wait for the LLM to generate a response
+        # The copy button only appears when the model finishes generating
+        # Using a long timeout since Copilot may take a while to process
+        print("Aguardando resposta do Copilot...")
+        
+        # Wait for the copy button to appear (indicates response is complete)
+        await tab.find(
+            aria_label="Copiar Resposta",
+            timeout=120,  # Wait up to 2 minutes for response
+        )
+
+        # Human-like delay before reading the response
+        await asyncio.sleep(random.uniform(0.5, 1.5))
+
+        # Find the response element using data-testid attribute
+        # Note: use data_testid (underscore) as keyword argument per Pydoll docs
+        response_element = await tab.find(
+            data_testid='lastChatMessage',
+            timeout=10
+        )
+
+        # Get text content using Pydoll's native element.text property
+        response_text = await response_element.text
+
+        if response_text:
+            # Generate timestamped filename
+            from datetime import datetime
+            timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+            output_file = Path(__file__).parent / 'outputs' / f'copilot_response_{timestamp}.md'
+            
+            # Ensure output directory exists
+            output_file.parent.mkdir(parents=True, exist_ok=True)
+            
+            # Save the response to markdown file
+            output_file.write_text(response_text, encoding='utf-8')
+            print(f"Resposta salva em: {output_file}")
+        else:
+            print("Não foi possível obter o conteúdo da resposta.")
+
+        # Keep browser open for debugging - press Enter to close
+        input("Pressione Enter para fechar o navegador...")
 
 
 asyncio.run(copilot_chat_automation())
