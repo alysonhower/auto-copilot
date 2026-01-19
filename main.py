@@ -73,6 +73,35 @@ def parse_copilot_response(text: str, filename: str = '') -> dict:
     return result
 
 
+def get_processed_filenames(filepath: Path) -> set:
+    """Retorna o conjunto de nomes de arquivos já processados no Excel."""
+    if not filepath.exists():
+        return set()
+    
+    try:
+        wb = load_workbook(filepath, read_only=True)
+        ws = wb.active
+        
+        # Encontra o índice da coluna 'Correspondência'
+        header_row = next(ws.iter_rows(min_row=1, max_row=1, values_only=True))
+        if 'Correspondência' not in header_row:
+            return set()
+        
+        col_idx = header_row.index('Correspondência')
+        
+        # Coleta todos os nomes de arquivos (pula o header)
+        processed = set()
+        for row in ws.iter_rows(min_row=2, values_only=True):
+            if row and len(row) > col_idx and row[col_idx]:
+                processed.add(row[col_idx])
+        
+        wb.close()
+        return processed
+    except Exception as e:
+        click.echo(f"Aviso: Erro ao ler arquivos já processados: {e}", err=True)
+        return set()
+
+
 def append_to_excel(data: dict, filepath: Path):
     """Adiciona dados ao arquivo Excel, criando-o se não existir."""
     headers = list(data.keys())
@@ -249,6 +278,26 @@ async def process_files_logic(files: List[Path]):
         click.echo("Nenhum arquivo válido encontrado para processar.")
         return
 
+    # Verifica arquivos já processados para retomada
+    output_file = Path(__file__).parent / 'outputs' / 'copilot_responses.xlsx'
+    processed_filenames = get_processed_filenames(output_file)
+    
+    if processed_filenames:
+        click.echo(f"📋 Encontrados {len(processed_filenames)} arquivos já processados no Excel.")
+    
+    # Filtra arquivos que ainda precisam ser processados
+    pending_files = [f for f in files if f.stem not in processed_filenames]
+    skipped_count = len(files) - len(pending_files)
+    
+    if skipped_count > 0:
+        click.echo(f"⏭️  Pulando {skipped_count} arquivos já processados.")
+    
+    if not pending_files:
+        click.echo("✅ Todos os arquivos já foram processados. Nada a fazer.")
+        return
+    
+    click.echo(f"📁 {len(pending_files)} arquivos pendentes para processamento.")
+
     options = ChromiumOptions()
     options.block_notifications = True
     options.block_popups = True
@@ -268,9 +317,9 @@ async def process_files_logic(files: List[Path]):
         
         waiting_tasks = []
         
-        click.echo(f"Iniciando processamento de {len(files)} arquivos...")
+        click.echo(f"Iniciando processamento de {len(pending_files)} arquivos...")
 
-        for i, file_path in enumerate(files):
+        for i, file_path in enumerate(pending_files):
             # Determina qual aba usar
             if i == 0:
                 tab = first_tab
