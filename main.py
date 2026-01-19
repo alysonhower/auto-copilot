@@ -1,22 +1,73 @@
 import asyncio
+import json
 import random
 from pathlib import Path
 
 from pydoll.browser.chromium import Chrome
 from pydoll.browser.options import ChromiumOptions
 
-# Persistent Chrome profile directory (stores login sessions, cookies, etc.)
-USER_DATA_DIR = Path(__file__).parent / '.chrome_profile'
+# Persistent cookies file (stores login sessions)
+COOKIE_FILE = Path(__file__).parent / '.cookies.json'
+
+
+async def load_cookies(tab):
+    """Load saved cookies to restore login session."""
+    if not COOKIE_FILE.exists():
+        return False
+    
+    try:
+        saved_cookies = json.loads(COOKIE_FILE.read_text(encoding='utf-8'))
+        
+        # Convert to simplified format (only settable fields)
+        # get_cookies() returns detailed Cookie objects with read-only fields
+        # set_cookies() expects CookieParam format
+        simplified_cookies = []
+        for cookie in saved_cookies:
+            simplified = {
+                'name': cookie['name'],
+                'value': cookie['value'],
+                'domain': cookie.get('domain'),
+                'path': cookie.get('path', '/'),
+                'secure': cookie.get('secure', False),
+                'httpOnly': cookie.get('httpOnly', False),
+            }
+            # Only include expiration if present and valid
+            if 'expires' in cookie and cookie['expires'] > 0:
+                simplified['expires'] = cookie['expires']
+            simplified_cookies.append(simplified)
+        
+        await tab.set_cookies(simplified_cookies)
+        print(f"Loaded {len(simplified_cookies)} cookies from {COOKIE_FILE}")
+        return True
+    except Exception as e:
+        print(f"Error loading cookies: {e}")
+        return False
+
+
+async def save_cookies(browser):
+    """Save cookies after successful login for future use."""
+    try:
+        cookies = await browser.get_cookies()
+        COOKIE_FILE.write_text(json.dumps(cookies, indent=2), encoding='utf-8')
+        print(f"Saved {len(cookies)} cookies to {COOKIE_FILE}")
+    except Exception as e:
+        print(f"Error saving cookies: {e}")
 
 
 async def copilot_chat_automation():
     """Type a message in Microsoft 365 Copilot chat and send it with human-like behavior."""
-    # Configure Chrome to use persistent profile
+    # Configure Chrome with preferences
     options = ChromiumOptions()
-    options.add_argument(f'--user-data-dir={USER_DATA_DIR}')
+    
+    # Block notifications and popups for cleaner automation
+    options.block_notifications = True
+    options.block_popups = True
 
     async with Chrome(options=options) as browser:
         tab = await browser.start()
+        
+        # Load existing cookies to restore login session
+        await load_cookies(tab)
 
         # Navigate to Microsoft 365 Copilot
         await tab.go_to('https://m365.cloud.microsoft/chat')
@@ -99,7 +150,12 @@ async def copilot_chat_automation():
         else:
             print("Não foi possível obter o conteúdo da resposta.")
 
+        # Save cookies for next run (persists login session)
+        await save_cookies(browser)
+
         # Keep browser open for debugging - press Enter to close
+        # NOTE: On first run, you need to log in manually. Cookies will be saved
+        # and subsequent runs will restore your login session automatically.
         input("Pressione Enter para fechar o navegador...")
 
 
