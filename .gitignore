@@ -15,3 +15,4 @@ wheels/
 # Output files
 outputs/
 
+.cookies.json
