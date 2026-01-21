@@ -133,6 +133,13 @@ async def interact_and_send(tab, file_path: Path):
             await tab.go_to('https://m365.cloud.microsoft/chat')
             await asyncio.sleep(random.uniform(2.0, 4.0))
 
+        # Simulate user reading/exploring the page
+        for _ in range(random.randint(1, 2)):
+            await tab.scroll.by('down', random.randint(100, 300), humanize=True)
+            await asyncio.sleep(random.uniform(0.5, 1.0))
+        await tab.scroll.to_top()
+        await asyncio.sleep(random.uniform(0.3, 0.6))
+
         # === ANEXAR ARQUIVO ===
         try:
             plus_menu_btn = await tab.find(data_testid="PlusMenuButton", timeout=10)
@@ -173,7 +180,8 @@ async def interact_and_send(tab, file_path: Path):
         message = r"Analise o documento em anexo e execute as três tarefas a seguir: 1. Identifique a data do documento (se existir), no formato DD/MM/AAAA (dia/mês/ano). Se não existir deixe em branco; 2. Produza um resumo em um único parágrafo, claro e objetivo; 3. Em seguida, identifique e destaque o objeto central do documento em uma única sentença curta, no estilo punchline (poucas palavras, direto ao ponto, refletindo o cerne do conteúdo). IMPORTANTE: Escreva de forma direta, sem usar frases de meta-referência como 'Este documento', 'O documento apresenta', 'O arquivo trata de', etc. Comunique as informações diretamente, como se estivesse relatando os fatos sem mencionar que é um documento. Retorne estritamente neste formato: `<data>[Data do documento ou vazio se não existir]</data><resumo>[Resumo direto, sem meta-referências]</resumo><objeto>[Objeto central, de forma direta]</objeto>"
         await chat_input.type_text(message, humanize=True)
 
-        await asyncio.sleep(random.uniform(0.5, 1.5))
+        # User reviewing message before sending (longer pause)
+        await asyncio.sleep(random.uniform(1.5, 3.0))
 
         # Clicar Enviar
         send_button = await tab.find(aria_label="Enviar", timeout=5)
@@ -182,6 +190,9 @@ async def interact_and_send(tab, file_path: Path):
             y_offset=random.randint(-3, 3),
             hold_time=random.uniform(0.09, 0.18)
         )
+
+        # User watching AI confirmation that generation started
+        await asyncio.sleep(random.uniform(1.5, 3.0))
         
         click.echo(f"Solicitação enviada para {filename}.")
         return True
@@ -191,7 +202,7 @@ async def interact_and_send(tab, file_path: Path):
         return False
 
 
-async def wait_and_save(tab, file_path: Path):
+async def wait_and_save(tab, file_path: Path, output_file: Path):
     """
     Aguarda a resposta em uma aba já ativa e salva no Excel.
     """
@@ -231,7 +242,6 @@ async def wait_and_save(tab, file_path: Path):
             attachment_name = file_path.stem
             parsed_data = parse_copilot_response(response_text, filename=attachment_name)
             
-            output_file = Path(__file__).parent / 'outputs' / 'copilot_responses.xlsx'
             output_file.parent.mkdir(parents=True, exist_ok=True)
             
             async with EXCEL_LOCK:
@@ -272,14 +282,13 @@ def resolve_paths(paths: Tuple[str]) -> List[Path]:
     return files_to_process
 
 
-async def process_files_logic(files: List[Path]):
+async def process_files_logic(files: List[Path], output_file: Path):
     """Lógica principal de orquestração do navegador."""
     if not files:
         click.echo("Nenhum arquivo válido encontrado para processar.")
         return
 
     # Verifica arquivos já processados para retomada
-    output_file = Path(__file__).parent / 'outputs' / 'copilot_responses.xlsx'
     processed_filenames = get_processed_filenames(output_file)
     
     if processed_filenames:
@@ -301,6 +310,16 @@ async def process_files_logic(files: List[Path]):
     options = ChromiumOptions()
     options.block_notifications = True
     options.block_popups = True
+
+    # WebGL (software renderer to avoid unique GPU signatures)
+    options.add_argument('--use-gl=swiftshader')
+    options.add_argument('--disable-features=WebGLDraftExtensions')
+
+    # WebRTC IP leak prevention
+    options.add_argument('--force-webrtc-ip-handling-policy=disable_non_proxied_udp')
+
+    options.add_argument("--headless=new")
+    options.add_argument("--window-size=1920,1080")
 
     async with Chrome(options=options) as browser:
         first_tab = await browser.start()
@@ -332,7 +351,7 @@ async def process_files_logic(files: List[Path]):
             
             if success:
                 # 2. PARTE PARALELA: Aguardar resposta
-                task = asyncio.create_task(wait_and_save(tab, file_path))
+                task = asyncio.create_task(wait_and_save(tab, file_path, output_file))
                 waiting_tasks.append(task)
             else:
                 click.echo(f"Pulando espera para {file_path.name} devido a falha no envio.", err=True)
@@ -350,7 +369,13 @@ async def process_files_logic(files: List[Path]):
 
 @click.command()
 @click.argument('paths', nargs=-1, type=click.Path(exists=True))
-def main(paths):
+@click.option(
+    '--output', '-o',
+    type=click.Path(dir_okay=False),
+    default='outputs/copilot_responses.xlsx',
+    help='Caminho do arquivo Excel de saída (padrão: outputs/copilot_responses.xlsx)'
+)
+def main(paths, output):
     """
     Auto-Copilot CLI.
     
@@ -366,8 +391,15 @@ def main(paths):
         click.echo("Por favor, forneça pelo menos um arquivo ou diretório válido.")
         return
 
+    # Resolve o caminho do arquivo de saída
+    output_file = Path(output)
+    if not output_file.is_absolute():
+        output_file = Path(__file__).parent / output_file
+    
+    click.echo(f"📊 Arquivo de saída: {output_file}")
+
     # Executa o loop assíncrono
-    asyncio.run(process_files_logic(files))
+    asyncio.run(process_files_logic(files, output_file))
 
 
 if __name__ == "__main__":
