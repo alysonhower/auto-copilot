@@ -126,6 +126,23 @@ def append_to_excel(data: dict, filepath: Path):
     wb.save(filepath)
 
 
+async def safe_close_tab(tab, timeout: float = 5.0):
+    """
+    Safely attempts to close a tab with a short timeout.
+    Does not raise exceptions - used for cleanup scenarios.
+    
+    Args:
+        tab: The tab to close
+        timeout: Maximum time to wait for close operation (default: 5s)
+    """
+    try:
+        await asyncio.wait_for(tab.close(), timeout=timeout)
+    except asyncio.TimeoutError:
+        click.echo("Aviso: Timeout ao fechar aba (ignorando)", err=True)
+    except Exception as e:
+        click.echo(f"Aviso: Não foi possível fechar aba: {e}", err=True)
+
+
 async def interact_and_send(tab, file_path: Path):
     """
     Realiza a interação até clicar em 'Enviar'.
@@ -397,18 +414,29 @@ async def process_files_logic(
             if success:
                 # 2. PARTE PARALELA: Aguardar resposta
                 task = asyncio.create_task(wait_and_save(tab, file_path, output_file))
-                waiting_tasks.append(task)
+                waiting_tasks.append((task, tab))
             else:
                 if tab != first_tab:
-                    await tab.close()
+                    await safe_close_tab(tab)
 
         if waiting_tasks:
             click.echo("Todas as solicitações enviadas. Aguardando respostas...")
-            await asyncio.gather(*waiting_tasks)
+            tasks_only = [t for t, _ in waiting_tasks]
+            await asyncio.gather(*tasks_only, return_exceptions=True)
+
+        # Graceful cleanup: close all tabs before browser exit
+        click.echo("Limpando abas...")
+        all_tabs = [tab for _, tab in waiting_tasks]
+        if first_tab not in all_tabs:
+            all_tabs.append(first_tab)
+        
+        for tab in all_tabs:
+            await safe_close_tab(tab)
+        
+        # Small delay to let browser process pending operations
+        await asyncio.sleep(0.5)
 
         await save_cookies(browser)
-        click.echo("Pressione Enter para fechar o navegador...")
-        input()
 
 
 @click.command()
