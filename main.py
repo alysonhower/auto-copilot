@@ -321,6 +321,36 @@ async def interact_and_send(tab, file_path: Path):
         await tab.scroll.to_top()
         await asyncio.sleep(random.uniform(0.3, 0.6))
 
+        # === SELECIONAR CHAT TEMPORÁRIO ===
+        try:
+            # 1. Clicar no accordion "Chat temporário"
+            chat_temp_accordion = await tab.find(
+                data_automation_id="newPrivateChatMenuButton", timeout=30
+            )
+            await chat_temp_accordion.click(
+                x_offset=random.randint(-5, 5),
+                y_offset=random.randint(-5, 5),
+                hold_time=random.uniform(0.08, 0.15),
+            )
+            await asyncio.sleep(random.uniform(0.5, 1.0))
+
+            # 2. Clicar no botão "Chat temporário"
+            chat_temp_button = await tab.find(
+                data_automation_id="newPrivateChatButton", timeout=30
+            )
+            await chat_temp_button.click(
+                x_offset=random.randint(-5, 5),
+                y_offset=random.randint(-5, 5),
+                hold_time=random.uniform(0.08, 0.15),
+            )
+            await asyncio.sleep(random.uniform(1.0, 2.0))  # Wait for new chat context
+
+        except Exception as e:
+            click.echo(f"Erro ao selecionar Chat temporário: {e}", err=True)
+            # Opsional: Raise se for crítico ou continuar tentando no chat padrão?
+            # Se a UI não abrir, provavelmente falhará adiante, então raise.
+            raise
+
         # === ANEXAR ARQUIVO ===
         try:
             plus_menu_btn = await tab.find(data_testid="PlusMenuButton", timeout=60)
@@ -585,6 +615,33 @@ async def process_files_logic(
             else:
                 if tab != first_tab:
                     await safe_close_tab(tab)
+
+            # === GERENCIAMENTO DE MEMÓRIA (FECHAR ABAS ANTIGAS) ===
+            # Se atingir 10 abas abertas aguardando, fecha as 5 mais antigas.
+            if len(waiting_tasks) >= 10:
+                click.echo(
+                    "⚠️ Limite de 10 abas atingido. Fechando as 5 mais antigas para liberar memória..."
+                )
+
+                # Seleciona as 5 tarefas mais antigas (primeiros 5 da lista)
+                tasks_to_close = waiting_tasks[:5]
+                waiting_tasks = waiting_tasks[5:]
+
+                # Separa tasks e tabs
+                tasks_only = [t for t, _ in tasks_to_close]
+                tabs_to_close = [tab_ for _, tab_ in tasks_to_close]
+
+                # Aguarda tasks terminarem
+                await asyncio.gather(*tasks_only, return_exceptions=True)
+
+                # Fecha as abas (simulando humano fechando uma por uma)
+                for old_tab in tabs_to_close:
+                    if old_tab != first_tab:
+                        await safe_close_tab(old_tab)
+                        # Pequena pausa entre fechamentos para parecer natural
+                        await asyncio.sleep(random.uniform(0.3, 0.7))
+
+                click.echo("✅ Limpeza de memória concluída (5 abas fechadas).")
 
         if waiting_tasks:
             click.echo("Todas as solicitações enviadas. Aguardando respostas...")
