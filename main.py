@@ -207,7 +207,8 @@ async def interact_and_send(tab, file_path: Path):
 
     except Exception as e:
         click.echo(f"Erro durante interação para {filename}: {e}", err=True)
-        return False
+        # Re-raise to allow retry_with_backoff to handle it
+        raise
 
 
 async def wait_and_save(tab, file_path: Path, output_file: Path):
@@ -348,6 +349,7 @@ async def process_files_logic(
         await load_cookies(first_tab)
         
         waiting_tasks = []
+        first_success = False  # Track if we've had at least one success
         
         click.echo(f"Iniciando processamento de {len(pending_files)} arquivos...")
 
@@ -364,18 +366,32 @@ async def process_files_logic(
                 click.echo(f"Abrindo nova aba para {file_path.name}...")
                 tab = await browser.new_tab()
             
-            # 1. PARTE SEQUENCIAL: Interagir e Enviar (com retry)
+            # 1. PARTE SEQUENCIAL: Interagir e Enviar
             try:
-                success = await retry_with_backoff(
-                    interact_and_send,
-                    tab,
-                    file_path,
-                    max_retries=None,  # Unlimited retries within schedule
-                    start_time=start_time,
-                    stop_time=stop_time
-                )
+                if not first_success:
+                    # Before first success: unlimited retry with backoff
+                    # (system might not be ready, e.g. Copilot not released yet)
+                    await retry_with_backoff(
+                        interact_and_send,
+                        tab,
+                        file_path,
+                        max_retries=None,  # Unlimited until success
+                        start_time=start_time,
+                        stop_time=stop_time
+                    )
+                else:
+                    # After first success: no retry, skip on error
+                    # (likely file-specific issue)
+                    await interact_and_send(tab, file_path)
+                
+                success = True
+                first_success = True
             except Exception as e:
-                click.echo(f"Falha definitiva para {file_path.name}: {e}", err=True)
+                if not first_success:
+                    # Should only get here if schedule ended
+                    click.echo(f"Falha definitiva para {file_path.name}: {e}", err=True)
+                else:
+                    click.echo(f"Erro com {file_path.name}, pulando: {e}", err=True)
                 success = False
             
             if success:
@@ -383,7 +399,6 @@ async def process_files_logic(
                 task = asyncio.create_task(wait_and_save(tab, file_path, output_file))
                 waiting_tasks.append(task)
             else:
-                click.echo(f"Pulando espera para {file_path.name} devido a falha no envio.", err=True)
                 if tab != first_tab:
                     await tab.close()
 
