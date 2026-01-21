@@ -2,14 +2,22 @@ import asyncio
 import json
 import random
 import re
+from datetime import time
 from pathlib import Path
-from typing import List, Tuple
+from typing import List, Optional, Tuple
 
 import click
 from openpyxl import Workbook, load_workbook
 
 from pydoll.browser.chromium import Chrome
 from pydoll.browser.options import ChromiumOptions
+
+from scheduler import (
+    parse_time,
+    is_within_schedule,
+    wait_until_schedule_starts,
+    retry_with_backoff
+)
 
 # Arquivo persistente de cookies
 COOKIE_FILE = Path(__file__).parent / '.cookies.json'
@@ -282,7 +290,12 @@ def resolve_paths(paths: Tuple[str]) -> List[Path]:
     return files_to_process
 
 
-async def process_files_logic(files: List[Path], output_file: Path):
+async def process_files_logic(
+    files: List[Path],
+    output_file: Path,
+    start_time: Optional[time] = None,
+    stop_time: Optional[time] = None
+):
     """Lógica principal de orquestração do navegador."""
     if not files:
         click.echo("Nenhum arquivo válido encontrado para processar.")
@@ -339,6 +352,11 @@ async def process_files_logic(files: List[Path], output_file: Path):
         click.echo(f"Iniciando processamento de {len(pending_files)} arquivos...")
 
         for i, file_path in enumerate(pending_files):
+            # Check schedule before each file
+            if start_time and stop_time:
+                if not is_within_schedule(start_time, stop_time):
+                    await wait_until_schedule_starts(start_time, stop_time)
+            
             # Determina qual aba usar
             if i == 0:
                 tab = first_tab
@@ -346,8 +364,19 @@ async def process_files_logic(files: List[Path], output_file: Path):
                 click.echo(f"Abrindo nova aba para {file_path.name}...")
                 tab = await browser.new_tab()
             
-            # 1. PARTE SEQUENCIAL: Interagir e Enviar
-            success = await interact_and_send(tab, file_path)
+            # 1. PARTE SEQUENCIAL: Interagir e Enviar (com retry)
+            try:
+                success = await retry_with_backoff(
+                    interact_and_send,
+                    tab,
+                    file_path,
+                    max_retries=None,  # Unlimited retries within schedule
+                    start_time=start_time,
+                    stop_time=stop_time
+                )
+            except Exception as e:
+                click.echo(f"Falha definitiva para {file_path.name}: {e}", err=True)
+                success = False
             
             if success:
                 # 2. PARTE PARALELA: Aguardar resposta
@@ -375,7 +404,19 @@ async def process_files_logic(files: List[Path], output_file: Path):
     default='outputs/copilot_responses.xlsx',
     help='Caminho do arquivo Excel de saída (padrão: outputs/copilot_responses.xlsx)'
 )
-def main(paths, output):
+@click.option(
+    '--start',
+    type=str,
+    default=None,
+    help='Hora de início do processamento (HH:MM, ex: 07:00)'
+)
+@click.option(
+    '--stop',
+    type=str,
+    default=None,
+    help='Hora de término do processamento (HH:MM, ex: 20:20)'
+)
+def main(paths, output, start, stop):
     """
     Auto-Copilot CLI.
     
@@ -385,6 +426,22 @@ def main(paths, output):
            Diretórios são escaneados recursivamente por arquivos suportados
            (.xlsx, .xls, .md, .txt, .pdf, .docx, .jpg, .jpeg, .png).
     """
+    # Validate schedule options
+    parsed_start = None
+    parsed_stop = None
+    
+    if start and stop:
+        try:
+            parsed_start = parse_time(start)
+            parsed_stop = parse_time(stop)
+            click.echo(f"⏰ Agendamento ativo: {parsed_start.strftime('%H:%M')} - {parsed_stop.strftime('%H:%M')}")
+        except ValueError as e:
+            click.echo(f"Erro: {e}", err=True)
+            return
+    elif start or stop:
+        click.echo("Erro: --start e --stop devem ser usados juntos", err=True)
+        return
+    
     files = resolve_paths(paths)
     
     if not files:
@@ -399,7 +456,7 @@ def main(paths, output):
     click.echo(f"📊 Arquivo de saída: {output_file}")
 
     # Executa o loop assíncrono
-    asyncio.run(process_files_logic(files, output_file))
+    asyncio.run(process_files_logic(files, output_file, parsed_start, parsed_stop))
 
 
 if __name__ == "__main__":
