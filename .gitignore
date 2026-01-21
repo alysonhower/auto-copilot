@@ -16,3 +16,4 @@ wheels/
 outputs/
 
 .cookies.json
+*.xlsx

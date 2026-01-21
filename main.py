@@ -7,7 +7,10 @@ from pathlib import Path
 from typing import List, Optional, Tuple
 
 import click
-from openpyxl import Workbook, load_workbook
+import win32com.client
+import pythoncom
+import time
+
 
 from pydoll.browser.chromium import Chrome
 from pydoll.browser.options import ChromiumOptions
@@ -22,8 +25,8 @@ from scheduler import (
 # Arquivo persistente de cookies
 COOKIE_FILE = Path(__file__).parent / '.cookies.json'
 
-# Lock global para escrita no Excel
-EXCEL_LOCK = asyncio.Lock()
+# Lock removed - COM handles concurrency
+
 
 # Extensões suportadas
 SUPPORTED_EXTENSIONS = {'.xlsx', '.xls', '.md', '.txt', '.pdf', '.docx', '.jpg', '.jpeg', '.png'}
@@ -81,49 +84,187 @@ def parse_copilot_response(text: str, filename: str = '') -> dict:
     return result
 
 
+def get_excel_app():
+    """Obtém ou cria uma instância do Excel."""
+    try:
+        return win32com.client.GetActiveObject("Excel.Application")
+    except Exception:
+        try:
+            return win32com.client.Dispatch("Excel.Application")
+        except Exception as e:
+            click.echo(f"Erro ao inicializar Excel: {e}", err=True)
+            return None
+
 def get_processed_filenames(filepath: Path) -> set:
-    """Retorna o conjunto de nomes de arquivos já processados no Excel."""
+    """Retorna o conjunto de nomes de arquivos já processados no Excel usando COM."""
     if not filepath.exists():
         return set()
     
-    try:
-        wb = load_workbook(filepath, read_only=True)
-        ws = wb.active
-        
-        # Encontra o índice da coluna 'Correspondência'
-        header_row = next(ws.iter_rows(min_row=1, max_row=1, values_only=True))
-        if 'Correspondência' not in header_row:
-            return set()
-        
-        col_idx = header_row.index('Correspondência')
-        
-        # Coleta todos os nomes de arquivos (pula o header)
-        processed = set()
-        for row in ws.iter_rows(min_row=2, values_only=True):
-            if row and len(row) > col_idx and row[col_idx]:
-                processed.add(row[col_idx])
-        
-        wb.close()
-        return processed
-    except Exception as e:
-        click.echo(f"Aviso: Erro ao ler arquivos já processados: {e}", err=True)
+    pythoncom.CoInitialize()
+    app = get_excel_app()
+    if not app:
         return set()
+    
+    wb = None
+    opened_by_us = False
+    abs_path = str(filepath.resolve())
+    processed = set()
+    
+    try:
+        # Tenta encontrar workbook já aberto
+        try:
+            # Workbooks collection é 1-indexed? Em python itera objects.
+            # Acesso direto pode falhar se busy.
+            for w in app.Workbooks:
+                if w.FullName.lower() == abs_path.lower():
+                    wb = w
+                    break
+        except Exception:
+            pass # Pode falhar se Excel estiver ocupado
+            
+        if not wb:
+            try:
+                wb = app.Workbooks.Open(abs_path)
+                opened_by_us = True
+            except Exception as e:
+                click.echo(f"Erro ao abrir arquivo {filepath}: {e}", err=True)
+                return set()
+        
+        ws = wb.Worksheets(1)
+        
+        # Ler headers
+        headers = []
+        col = 1
+        while True:
+            val = ws.Cells(1, col).Value
+            if not val:
+                break
+            headers.append(val)
+            col += 1
+            
+        if 'Correspondência' in headers:
+            col_idx = headers.index('Correspondência') + 1
+            # Ler coluna (assume dados contíguos ou varre used range)
+            # UsedRange é mais seguro
+            used_range = ws.UsedRange
+            # Convert values to list of lists
+            data = used_range.Value
+            if data and isinstance(data, tuple):
+                 # data é tuple de tuples
+                 # Row 1 é header.
+                 for i, row in enumerate(data):
+                     if i == 0: continue # Skip header
+                     if len(row) >= col_idx:
+                         val = row[col_idx-1]
+                         if val:
+                             processed.add(str(val))
+    except Exception as e:
+         click.echo(f"Erro ao ler Excel via COM: {e}", err=True)
+    finally:
+        if opened_by_us and wb:
+            try:
+                wb.Close(SaveChanges=False)
+            except:
+                pass
+    
+    return processed
 
 
 def append_to_excel(data: dict, filepath: Path):
-    """Adiciona dados ao arquivo Excel, criando-o se não existir."""
-    headers = list(data.keys())
+    """Adiciona dados ao Excel usando COM com repetição em caso de bloqueio."""
+    pythoncom.CoInitialize()
+    abs_path = str(filepath.resolve())
     
-    if filepath.exists():
-        wb = load_workbook(filepath)
-        ws = wb.active
-    else:
-        wb = Workbook()
-        ws = wb.active
-        ws.append(headers)
-    
-    ws.append([data[h] for h in headers])
-    wb.save(filepath)
+    max_retries = 20
+    for attempt in range(max_retries):
+        try:
+            app = get_excel_app()
+            if not app:
+                return
+
+            wb = None
+            opened_by_us = False
+            
+            # Check open workbooks
+            try:
+                for w in app.Workbooks:
+                    if w.FullName.lower() == abs_path.lower():
+                        wb = w
+                        break
+            except Exception:
+                pass
+
+            if not wb:
+                if filepath.exists():
+                    wb = app.Workbooks.Open(abs_path)
+                    opened_by_us = True
+                else:
+                    wb = app.Workbooks.Add()
+                    wb.SaveAs(abs_path)
+                    opened_by_us = True
+            
+            ws = wb.Worksheets(1)
+            
+            # Find next row
+            # xlUp = -4162
+            last_row_cell = ws.Cells(ws.Rows.Count, 1).End(-4162)
+            last_row = last_row_cell.Row
+            
+            # Check empty sheet
+            if last_row == 1 and not ws.Cells(1, 1).Value:
+                next_row = 1
+            else:
+                next_row = last_row + 1
+            
+            # Map headers
+            sheet_headers = []
+            col = 1
+            while True:
+                val = ws.Cells(1, col).Value
+                if not val:
+                    break
+                sheet_headers.append(str(val))
+                col += 1
+            
+            if not sheet_headers:
+                # Initialize new sheet headers
+                headers = list(data.keys())
+                for i, h in enumerate(headers, 1):
+                    ws.Cells(1, i).Value = h
+                sheet_headers = headers
+                next_row = 2
+            
+            # Write data matching headers
+            for key, value in data.items():
+                if key in sheet_headers:
+                    col_idx = sheet_headers.index(key) + 1
+                    ws.Cells(next_row, col_idx).Value = value
+                else:
+                    # New column? Append logic could go here but skipping for simplicity
+                    pass
+            
+            # Save logic: Only save/close if we opened it.
+            # If user has it open, changes appear live.
+            if opened_by_us:
+                wb.Save()
+                wb.Close()
+            
+            return # Success
+            
+        except Exception as e:
+            # Handle CallRejected (user typing)
+            err_str = str(e)
+            if 'Call was rejected by callee' in err_str or '-2147418111' in err_str:
+                click.echo(f"⚠️ Excel ocupado (usuário editando?), tentativa {attempt+1}/{max_retries}...", err=True)
+                time.sleep(2)
+                continue
+            else:
+                click.echo(f"Erro fatal ao escrever no Excel: {e}", err=True)
+                if opened_by_us and wb:
+                     try: wb.Close(SaveChanges=False)
+                     except: pass
+                raise e
+
 
 
 async def safe_close_tab(tab, timeout: float = 5.0):
@@ -270,9 +411,11 @@ async def wait_and_save(tab, file_path: Path, output_file: Path):
             
             output_file.parent.mkdir(parents=True, exist_ok=True)
             
-            async with EXCEL_LOCK:
-                append_to_excel(parsed_data, output_file)
-                click.echo(f"✅ Resultados para {filename} salvos em {output_file}")
+            # async with EXCEL_LOCK:
+            # Lock removed for COM
+            append_to_excel(parsed_data, output_file)
+            click.echo(f"✅ Resultados para {filename} salvos em {output_file}")
+
         else:
             click.echo(f"❌ Nenhum conteúdo obtido na resposta para {filename}", err=True)
 
