@@ -167,7 +167,7 @@ async def interact_and_send(tab, file_path: Path):
 
         # === ANEXAR ARQUIVO ===
         try:
-            plus_menu_btn = await tab.find(data_testid="PlusMenuButton", timeout=10)
+            plus_menu_btn = await tab.find(data_testid="PlusMenuButton", timeout=60)
             await plus_menu_btn.click(
                 x_offset=random.randint(-5, 5),
                 y_offset=random.randint(-5, 5),
@@ -192,7 +192,7 @@ async def interact_and_send(tab, file_path: Path):
         await asyncio.sleep(random.uniform(1.0, 2.0))
 
         # Focar chat
-        chat_input = await tab.find(aria_label="Copilot de Mensagens", timeout=10)
+        chat_input = await tab.find(aria_label="Copilot de Mensagens", timeout=60)
         await chat_input.click(
             x_offset=random.randint(-5, 5),
             y_offset=random.randint(-3, 3),
@@ -209,7 +209,7 @@ async def interact_and_send(tab, file_path: Path):
         await asyncio.sleep(random.uniform(1.5, 3.0))
 
         # Clicar Enviar
-        send_button = await tab.find(aria_label="Enviar", timeout=5)
+        send_button = await tab.find(aria_label="Enviar", timeout=60)
         await send_button.click(
             x_offset=random.randint(-5, 5),
             y_offset=random.randint(-3, 3),
@@ -349,8 +349,8 @@ async def process_files_logic(
     # WebRTC IP leak prevention
     options.add_argument('--force-webrtc-ip-handling-policy=disable_non_proxied_udp')
 
-    options.add_argument("--headless=new")
-    options.add_argument("--window-size=1920,1080")
+    # options.add_argument("--headless=new")
+    # options.add_argument("--window-size=1920,1080")
 
     async with Chrome(options=options) as browser:
         first_tab = await browser.start()
