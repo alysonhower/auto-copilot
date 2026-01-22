@@ -9,6 +9,7 @@ from typing import List, Optional, Tuple
 import click
 import win32com.client
 import pythoncom
+from selectolax.parser import HTMLParser
 
 from pydoll.browser.chromium import Chrome
 from pydoll.browser.options import ChromiumOptions
@@ -40,6 +41,12 @@ SUPPORTED_EXTENSIONS = {
 }
 
 
+class UploadFailedError(Exception):
+    """Raised when file upload fails (Try again button detected)."""
+
+    pass
+
+
 async def load_cookies(tab):
     """Carrega cookies salvos para restaurar a sessão de login."""
     if not COOKIE_FILE.exists():
@@ -63,10 +70,16 @@ async def load_cookies(tab):
             simplified_cookies.append(simplified)
 
         await tab.set_cookies(simplified_cookies)
-        click.echo(f"Carregados {len(simplified_cookies)} cookies de {COOKIE_FILE}")
+        await tab.set_cookies(simplified_cookies)
+        click.echo(
+            click.style(
+                f"Carregados {len(simplified_cookies)} cookies de {COOKIE_FILE}",
+                fg="green",
+            )
+        )
         return True
     except Exception as e:
-        click.echo(f"Erro ao carregar cookies: {e}", err=True)
+        click.echo(click.style(f"Erro ao carregar cookies: {e}", fg="red"), err=True)
         return False
 
 
@@ -75,7 +88,10 @@ async def save_cookies(browser):
     try:
         cookies = await browser.get_cookies()
         COOKIE_FILE.write_text(json.dumps(cookies, indent=2), encoding="utf-8")
-        click.echo(f"Salvos {len(cookies)} cookies em {COOKIE_FILE}")
+        COOKIE_FILE.write_text(json.dumps(cookies, indent=2), encoding="utf-8")
+        click.echo(
+            click.style(f"Salvos {len(cookies)} cookies em {COOKIE_FILE}", fg="green")
+        )
     except Exception as e:
         click.echo(f"Erro ao salvar cookies: {e}", err=True)
 
@@ -97,16 +113,24 @@ def load_message_content(message_input: str) -> str:
         if message_path.suffix.lower() == ".md":
             try:
                 content = message_path.read_text(encoding="utf-8")
-                click.echo(f"Mensagem carregada de: {message_path}")
+                click.echo(
+                    click.style(f"Mensagem carregada de: {message_path}", fg="cyan")
+                )
                 return content.strip()
             except Exception as e:
                 click.echo(
-                    f"Erro ao ler arquivo de mensagem {message_path}: {e}", err=True
+                    click.style(
+                        f"Erro ao ler arquivo de mensagem {message_path}: {e}", fg="red"
+                    ),
+                    err=True,
                 )
                 raise
         else:
             click.echo(
-                f"Aviso: Arquivo {message_path} não é .md, usando caminho como mensagem literal",
+                click.style(
+                    f"Aviso: Arquivo {message_path} não é .md, usando caminho como mensagem literal",
+                    fg="yellow",
+                ),
                 err=True,
             )
 
@@ -114,15 +138,87 @@ def load_message_content(message_input: str) -> str:
     return message_input
 
 
-def parse_copilot_response(text: str, filename: str = "") -> dict:
-    """Extrai conteúdo das tags <data>, <resumo>, e <objeto>."""
-    tags = ["data", "resumo", "objeto"]
+def normalize_column_name(tag: str) -> str:
+    """
+    Converte uma tag (ex: 'my-tag', 'myTag') em um nome de coluna legível (ex: 'My Tag').
+    """
+    # Substitui hífens e underscores por espaços
+    s = tag.replace("-", " ").replace("_", " ")
+
+    # Insere espaço antes de letras maiúsculas (camelCase)
+    s = re.sub(r"(?<!^)(?=[A-Z])", " ", s)
+
+    # Capitaliza cada palavra
+    return s.title()
+
+
+def extract_tags_from_prompt(prompt_text: str) -> List[str]:
+    """
+    Analisa o prompt para descobrir quais tags o usuário espera na resposta.
+    Usa Selectolax para percorrer a estrutura.
+    """
+    tags = []
+    seen = set()
+
+    # Define tags padrão HTML para ignorar se aparecerem sem intencionalidade clara
+    # (Embora num prompt markdown, qualquer tag <foo> seja relevante)
+    ignored_tags = {"html", "head", "body", "-text", "br", "p", "div", "span"}
+
+    try:
+        tree = HTMLParser(prompt_text)
+
+        # Percorre todos os nós
+        if tree.root:
+            for node in tree.root.traverse():
+                tag_name = node.tag
+
+                if not tag_name or not isinstance(tag_name, str):
+                    continue
+
+                # Filtra tags irrelevantes e nomes estranhos
+                if tag_name in ignored_tags:
+                    continue
+
+                if tag_name not in seen:
+                    tags.append(tag_name)
+                    seen.add(tag_name)
+
+    except Exception as e:
+        click.echo(f"Aviso ao extrair tags do prompt: {e}", err=True)
+        # Fallback? Retorna vazio e processa sem tags específicas
+
+    return tags
+
+
+def parse_copilot_response(text: str, tags: List[str], filename: str = "") -> dict:
+    """
+    Extrai conteúdo das tags especificadas usando Selectolax.
+
+    Args:
+        text: O texto HTML/Markdown da resposta.
+        tags: Lista de tags para buscar (em ordem).
+        filename: Nome do arquivo processado (para metadados).
+    """
     result = {"Correspondência": filename}
 
-    for tag in tags:
-        pattern = rf"<{tag}>(.*?)</{tag}>"
-        match = re.search(pattern, text, re.DOTALL | re.IGNORECASE)
-        result[tag.capitalize()] = match.group(1).strip() if match else ""
+    try:
+        tree = HTMLParser(text)
+
+        for tag in tags:
+            column_name = normalize_column_name(tag)
+
+            # Busca o primeiro nó com a tag
+            node = tree.css_first(tag)
+            if node:
+                # Extrai texto limpo
+                content = node.text(strip=True)
+                result[column_name] = content
+            else:
+                result[column_name] = ""
+
+    except Exception as e:
+        click.echo(f"Erro ao parsear resposta com Selectolax: {e}", err=True)
+        # Pode retornar parcial ou vazio
 
     return result
 
@@ -135,7 +231,9 @@ def get_excel_app():
         try:
             return win32com.client.Dispatch("Excel.Application")
         except Exception as e:
-            click.echo(f"Erro ao inicializar Excel: {e}", err=True)
+            click.echo(
+                click.style(f"Erro ao inicializar Excel: {e}", fg="red"), err=True
+            )
             return None
 
 
@@ -171,7 +269,10 @@ def get_processed_filenames(filepath: Path) -> set:
                 wb = app.Workbooks.Open(abs_path)
                 opened_by_us = True
             except Exception as e:
-                click.echo(f"Erro ao abrir arquivo {filepath}: {e}", err=True)
+                click.echo(
+                    click.style(f"Erro ao abrir arquivo {filepath}: {e}", fg="red"),
+                    err=True,
+                )
                 return set()
 
         ws = wb.Worksheets(1)
@@ -204,7 +305,7 @@ def get_processed_filenames(filepath: Path) -> set:
                         if val:
                             processed.add(str(val))
     except Exception as e:
-        click.echo(f"Erro ao ler Excel via COM: {e}", err=True)
+        click.echo(click.style(f"Erro ao ler Excel via COM: {e}", fg="red"), err=True)
     finally:
         if opened_by_us and wb:
             try:
@@ -328,151 +429,195 @@ async def safe_close_tab(tab, timeout: float = 5.0):
     try:
         await asyncio.wait_for(tab.close(), timeout=timeout)
     except asyncio.TimeoutError:
-        click.echo("Timeout ao fechar aba (ignorando)", err=True)
+        click.echo(
+            click.style("Timeout ao fechar aba (ignorando)", fg="yellow"), err=True
+        )
     except Exception as e:
-        click.echo(f"Não foi possível fechar aba: {e}", err=True)
+        click.echo(click.style(f"Não foi possível fechar aba: {e}", fg="red"), err=True)
 
 
-async def interact_and_send(tab, file_path: Path, message: str):
+async def interact_and_send(browser, tab, file_path: Path, message: str):
     """
     Realiza a interação até clicar em 'Enviar'.
-    Retorna True se bem-sucedido, False caso contrário.
+    Retorna a aba ativa (pode mudar em caso de retry).
     """
     filename = file_path.name
-    click.echo(f"Iniciando interação para: {filename}")
 
-    try:
-        # Navega se necessário
-        current_url = await tab.current_url
-
-        if "m365.cloud.microsoft/chat" not in current_url:
-            await tab.go_to("https://m365.cloud.microsoft/chat")
-            await asyncio.sleep(random.uniform(0.5, 3.0))
-
-        # === SELECIONAR CHAT TEMPORÁRIO ===
+    # Retry loop for upload failures
+    for attempt in range(3):
         try:
-            # 1. Clicar no accordion "Chat temporário"
-            chat_temp_accordion = await tab.find(
-                data_automation_id="newPrivateChatMenuButton", timeout=30
+            click.echo(
+                click.style(
+                    f"Iniciando interação para: {filename} (Tentativa {attempt + 1}/3)",
+                    fg="cyan",
+                )
             )
 
-            click.echo("Abrindo Chat temporário...")
+            # Navega se necessário
+            current_url = await tab.current_url
 
-            await chat_temp_accordion.click(
-                x_offset=random.randint(-5, 5),
-                y_offset=random.randint(-5, 5),
-                hold_time=random.uniform(0.02, 0.15),
-            )
+            if "m365.cloud.microsoft/chat" not in current_url:
+                await tab.go_to("https://m365.cloud.microsoft/chat")
+                await asyncio.sleep(random.uniform(0.5, 3.0))
+
+            # === SELECIONAR CHAT TEMPORÁRIO ===
+            try:
+                # 1. Clicar no accordion "Chat temporário"
+                chat_temp_accordion = await tab.find(
+                    data_automation_id="newPrivateChatMenuButton", timeout=30
+                )
+
+                click.echo(click.style("Abrindo Chat temporário...", fg="cyan"))
+
+                await chat_temp_accordion.click(
+                    x_offset=random.randint(-5, 5),
+                    y_offset=random.randint(-5, 5),
+                    hold_time=random.uniform(0.02, 0.15),
+                )
+                await asyncio.sleep(random.uniform(0.1, 1.0))
+
+                # 2. Clicar no botão "Chat temporário"
+                chat_temp_button = await tab.find(
+                    data_automation_id="newPrivateChatButton", timeout=30
+                )
+
+                await chat_temp_button.click(
+                    x_offset=random.randint(-5, 5),
+                    y_offset=random.randint(-5, 5),
+                    hold_time=random.uniform(0.02, 0.15),
+                )
+
+                await asyncio.sleep(
+                    random.uniform(0.1, 1.0)
+                )  # Wait for new chat context
+
+            except Exception as e:
+                click.echo(
+                    click.style(f"Erro ao selecionar Chat temporário: {e}", fg="red"),
+                    err=True,
+                )
+                raise
+                raise
+
+            # === ANEXAR ARQUIVO ===
+            click.echo(click.style("Abrindo menu de anexos...", fg="cyan"))
+
+            try:
+                plus_menu_btn = await tab.find(data_testid="PlusMenuButton", timeout=60)
+                await plus_menu_btn.click(
+                    x_offset=random.randint(-5, 5),
+                    y_offset=random.randint(-5, 5),
+                    hold_time=random.uniform(0.02, 0.15),
+                )
+            except Exception:
+                raise
+
             await asyncio.sleep(random.uniform(0.1, 1.0))
 
-            # 2. Clicar no botão "Chat temporário"
-            chat_temp_button = await tab.find(
-                data_automation_id="newPrivateChatButton", timeout=30
-            )
+            async with tab.expect_file_chooser(files=[file_path]):
+                upload_menu_item = await tab.find(
+                    text="Carregar imagens e arquivos", timeout=60
+                )
+                await upload_menu_item.click(
+                    x_offset=random.randint(-5, 5),
+                    y_offset=random.randint(-5, 5),
+                    hold_time=random.uniform(0.02, 0.15),
+                )
 
-            await chat_temp_button.click(
+            await asyncio.sleep(random.uniform(1.0, 2.0))
+
+            # === CHECK FOR UPLOAD FAILURE ===
+            # Check for "Tentar novamente" button (quietly, without logging timeout error)
+            try_again_btn = await tab.find(
+                text="Tentar novamente", timeout=5.0, raise_exc=False
+            )
+            if try_again_btn:
+                raise UploadFailedError("Botão 'Tentar novamente' detectado.")
+
+            # Focar chat
+            chat_input = await tab.find(aria_label="Copilot de Mensagens", timeout=60)
+
+            await chat_input.click(
                 x_offset=random.randint(-5, 5),
                 y_offset=random.randint(-5, 5),
                 hold_time=random.uniform(0.02, 0.15),
             )
 
-            await asyncio.sleep(random.uniform(0.1, 1.0))  # Wait for new chat context
+            await asyncio.sleep(random.uniform(0.1, 1.0))
 
-        except Exception as e:
-            click.echo(f"Erro ao selecionar Chat temporário: {e}", err=True)
-            # Opsional: Raise se for crítico ou continuar tentando no chat padrão?
-            # Se a UI não abrir, provavelmente falhará adiante, então raise.
-            raise
+            click.echo(click.style(f"Digitando prompt ({filename})...", fg="cyan"))
 
-        # === ANEXAR ARQUIVO ===
-        click.echo("Abrindo menu de anexos...")
+            # Digitar mensagem (recebida como parâmetro)
+            await chat_input.type_text(message, humanize=True)
 
-        try:
-            plus_menu_btn = await tab.find(data_testid="PlusMenuButton", timeout=60)
-            await plus_menu_btn.click(
-                x_offset=random.randint(-5, 5),
-                y_offset=random.randint(-5, 5),
-                hold_time=random.uniform(0.02, 0.15),
-            )
-        except Exception:
-            # Tenta recuperar se o menu não abrir ou já estiver aberto?
-            # Por simplicidade, assume erro se não achar.
-            # Se falhar aqui, pode ser que a página não carregou direito.
-            raise
+            # User reviewing message before sending (longer pause)
+            await asyncio.sleep(random.uniform(1.5, 3.0))
 
-        await asyncio.sleep(random.uniform(0.1, 1.0))
+            # Clicar Enviar
+            send_button = await tab.find(aria_label="Enviar", timeout=60)
 
-        async with tab.expect_file_chooser(files=[file_path]):
-            upload_menu_item = await tab.find(
-                text="Carregar imagens e arquivos", timeout=60
-            )
-            await upload_menu_item.click(
+            await send_button.click(
                 x_offset=random.randint(-5, 5),
                 y_offset=random.randint(-5, 5),
                 hold_time=random.uniform(0.02, 0.15),
             )
 
-        await asyncio.sleep(random.uniform(1.0, 2.0))
-
-        # Focar chat
-        chat_input = await tab.find(aria_label="Copilot de Mensagens", timeout=60)
-
-        await chat_input.click(
-            x_offset=random.randint(-5, 5),
-            y_offset=random.randint(-5, 5),
-            hold_time=random.uniform(0.02, 0.15),
-        )
-
-        await asyncio.sleep(random.uniform(0.1, 1.0))
-
-        click.echo(f"Digitando prompt ({filename})...")
-
-        # Digitar mensagem (recebida como parâmetro)
-        await chat_input.type_text(message, humanize=True)
-
-        # User reviewing message before sending (longer pause)
-        await asyncio.sleep(random.uniform(1.5, 3.0))
-
-        # Clicar Enviar
-        send_button = await tab.find(aria_label="Enviar", timeout=60)
-
-        await send_button.click(
-            x_offset=random.randint(-5, 5),
-            y_offset=random.randint(-5, 5),
-            hold_time=random.uniform(0.02, 0.15),
-        )
-
-        # Wait for generation to START (stop button appears)
-        # This indicates the AI has started generating a response
-        click.echo(f"Aguardando início da geração ({filename})...")
-        try:
-            await tab.find(aria_label="Interromper geração", timeout=60)
-            click.echo(f"Geração iniciada ({filename})...")
-        except Exception:
-            # If stop button doesn't appear, fallback to delay
+            # Wait for generation to START (stop button appears)
             click.echo(
-                f"Botão de parar não encontrado, assumindo geração iniciada ({filename})..."
+                click.style(f"Aguardando início da geração ({filename})...", fg="cyan")
             )
+            try:
+                await tab.find(aria_label="Interromper geração", timeout=60)
+                click.echo(click.style(f"Geração iniciada ({filename})...", fg="green"))
+            except Exception:
+                click.echo(
+                    click.style(
+                        f"Botão de parar não encontrado, assumindo geração iniciada ({filename})...",
+                        fg="yellow",
+                    )
+                )
+                await asyncio.sleep(random.uniform(0.5, 3.0))
+
+            # Small delay to ensure generation is stable
             await asyncio.sleep(random.uniform(0.5, 3.0))
 
-        # Small delay to ensure generation is stable
-        await asyncio.sleep(random.uniform(0.5, 3.0))
+            click.echo(click.style(f"Solicitação enviada ({filename})...", fg="green"))
+            return tab
+            return tab
 
-        click.echo(f"Solicitação enviada ({filename})...")
-        return True
+        except UploadFailedError as e:
+            click.echo(
+                click.style(
+                    f"Falha de upload ({e}). Tentando novamente imediatamente...",
+                    fg="magenta",
+                ),
+                err=True,
+            )
+            await safe_close_tab(tab)
+            await asyncio.sleep(random.uniform(1.0, 2.0))
+            tab = await browser.new_tab()
+            # Loop continues to next attempt
+            continue
 
-    except Exception as e:
-        click.echo(f"{e}", err=True)
-        # Re-raise to allow retry_with_backoff to handle it
-        raise
+        except Exception as e:
+            click.echo(click.style(f"{e}", fg="red"), err=True)
+            # For other errors, we re-raise to let the outer scheduler handle it,
+            # or we could also retry?
+            # Plan says: upload failure -> immediate retry. Other failures -> raise.
+            raise
+
+    # If loop finishes without success
+    raise Exception(f"Falha no upload após 3 tentativas para {filename}")
 
 
-async def wait_and_save(tab, file_path: Path, output_file: Path):
+async def wait_and_save(tab, file_path: Path, output_file: Path, tags: List[str]):
     """
     Aguarda a resposta em uma aba já ativa e salva no Excel.
     """
     filename = file_path.name
-    click.echo(f"Aguardando resposta ({filename}) em segundo plano...")
+    click.echo(
+        click.style(f"Aguardando resposta ({filename}) em segundo plano...", fg="cyan")
+    )
 
     try:
         # Aguarda botão de copiar (indica fim da geração)
@@ -497,7 +642,9 @@ async def wait_and_save(tab, file_path: Path, output_file: Path):
             response_text = clipboard_result["result"]["result"]["value"]
         except (KeyError, TypeError) as e:
             click.echo(
-                f"Estrutura inesperada do clipboard ({filename}): {e}",
+                click.style(
+                    f"Estrutura inesperada do clipboard ({filename}): {e}", fg="red"
+                ),
                 err=True,
             )
             response_text = ""
@@ -505,18 +652,29 @@ async def wait_and_save(tab, file_path: Path, output_file: Path):
         if response_text:
             attachment_name = file_path.stem
             parsed_data = parse_copilot_response(
-                response_text, filename=attachment_name
+                response_text, tags=tags, filename=attachment_name
             )
 
             output_file.parent.mkdir(parents=True, exist_ok=True)
 
             # async with EXCEL_LOCK:
             # Lock removed for COM
+            # async with EXCEL_LOCK:
+            # Lock removed for COM
             append_to_excel(parsed_data, output_file)
-            click.echo(f"Resultados para {filename} salvos em {output_file}")
+            click.echo(
+                click.style(
+                    f"Resultados para {filename} salvos em {output_file}", fg="green"
+                )
+            )
 
         else:
-            click.echo(f"Nenhum conteúdo obtido na resposta ({filename})", err=True)
+            click.echo(
+                click.style(
+                    f"Nenhum conteúdo obtido na resposta ({filename})", fg="red"
+                ),
+                err=True,
+            )
 
     except Exception as e:
         click.echo(f"{e}", err=True)
@@ -532,7 +690,10 @@ def resolve_paths(paths: Tuple[str]) -> List[Path]:
     for path_str in paths:
         path = Path(path_str)
         if not path.exists():
-            click.echo(f"Caminho não encontrado ignorado ({path})", err=True)
+            click.echo(
+                click.style(f"Caminho não encontrado ignorado ({path})", fg="yellow"),
+                err=True,
+            )
             continue
 
         if path.is_file():
@@ -545,7 +706,7 @@ def resolve_paths(paths: Tuple[str]) -> List[Path]:
                 )
 
         elif path.is_dir():
-            click.echo(f"Escaneando diretório ({path})...")
+            click.echo(click.style(f"Escaneando diretório ({path})...", fg="cyan"))
             for item in path.rglob("*"):
                 if item.is_file() and item.suffix.lower() in SUPPORTED_EXTENSIONS:
                     files_to_process.append(item)
@@ -557,13 +718,17 @@ async def process_files_logic(
     files: List[Path],
     output_file: Path,
     message: str,
+    tags: List[str],
     start_time: Optional[time] = None,
     stop_time: Optional[time] = None,
     disable_headless: bool = False,
 ):
     """Lógica principal de orquestração do navegador."""
+    """Lógica principal de orquestração do navegador."""
     if not files:
-        click.echo("Nenhum arquivo válido encontrado para processar.")
+        click.echo(
+            click.style("Nenhum arquivo válido encontrado para processar.", fg="red")
+        )
         return
 
     # Verifica arquivos já processados para retomada
@@ -571,7 +736,10 @@ async def process_files_logic(
 
     if processed_filenames:
         click.echo(
-            f"Encontrados {len(processed_filenames)} arquivos já processados no Excel."
+            click.style(
+                f"Encontrados {len(processed_filenames)} arquivos já processados no Excel.",
+                fg="yellow",
+            )
         )
 
     # Filtra arquivos que ainda precisam ser processados
@@ -579,13 +747,25 @@ async def process_files_logic(
     skipped_count = len(files) - len(pending_files)
 
     if skipped_count > 0:
-        click.echo(f"Pulando {skipped_count} arquivos já processados.")
+        click.echo(
+            click.style(
+                f"Pulando {skipped_count} arquivos já processados.", fg="yellow"
+            )
+        )
 
     if not pending_files:
-        click.echo("Todos os arquivos já foram processados. Nada a fazer.")
+        click.echo(
+            click.style(
+                "Todos os arquivos já foram processados. Nada a fazer.", fg="green"
+            )
+        )
         return
 
-    click.echo(f"{len(pending_files)} arquivos pendentes para processamento.")
+    click.echo(
+        click.style(
+            f"{len(pending_files)} arquivos pendentes para processamento.", fg="cyan"
+        )
+    )
 
     options = ChromiumOptions()
     options.block_notifications = True
@@ -639,7 +819,12 @@ async def process_files_logic(
         waiting_tasks = []
         first_success = False  # Track if we've had at least one success
 
-        click.echo(f"Iniciando processamento de {len(pending_files)} arquivos...")
+        click.echo(
+            click.style(
+                f"Iniciando processamento de {len(pending_files)} arquivos...",
+                fg="green",
+            )
+        )
 
         for i, file_path in enumerate(pending_files):
             # Check schedule before each file
@@ -651,7 +836,9 @@ async def process_files_logic(
             if i == 0:
                 tab = first_tab
             else:
-                click.echo(f"Abrindo nova aba para {file_path.name}...")
+                click.echo(
+                    click.style(f"Abrindo nova aba para {file_path.name}...", fg="cyan")
+                )
                 tab = await browser.new_tab()
 
             # 1. PARTE SEQUENCIAL: Interagir e Enviar
@@ -659,8 +846,11 @@ async def process_files_logic(
                 if not first_success:
                     # Before first success: unlimited retry with backoff
                     # (system might not be ready, e.g. Copilot not released yet)
-                    await retry_with_backoff(
+                    # Before first success: unlimited retry with backoff
+                    # (system might not be ready, e.g. Copilot not released yet)
+                    tab = await retry_with_backoff(
                         interact_and_send,
+                        browser,  # Pass browser
                         tab,
                         file_path,
                         message,
@@ -671,7 +861,7 @@ async def process_files_logic(
                 else:
                     # After first success: no retry, skip on error
                     # (likely file-specific issue)
-                    await interact_and_send(tab, file_path, message)
+                    tab = await interact_and_send(browser, tab, file_path, message)
 
                 success = True
                 first_success = True
@@ -685,7 +875,9 @@ async def process_files_logic(
 
             if success:
                 # 2. PARTE PARALELA: Aguardar resposta
-                task = asyncio.create_task(wait_and_save(tab, file_path, output_file))
+                task = asyncio.create_task(
+                    wait_and_save(tab, file_path, output_file, tags)
+                )
                 waiting_tasks.append((task, tab))
             else:
                 if tab != first_tab:
@@ -824,12 +1016,22 @@ def main(prompt, paths, output, start, stop, disable_headless):
 
     click.echo(f"Arquivo de saída: {output_file}")
 
+    # Extract tags from prompt content to determine dynamic columns
+    click.echo("Analisando prompt para identificar tags dinâmicas...")
+    tags = extract_tags_from_prompt(message_content)
+
+    if tags:
+        click.echo(f"Tags identificadas: {', '.join(tags)}")
+    else:
+        click.echo("Nenhuma tag específica identificada no prompt.")
+
     # Executa o loop assíncrono
     asyncio.run(
         process_files_logic(
             files,
             output_file,
             message_content,
+            tags,
             parsed_start,
             parsed_stop,
             disable_headless,

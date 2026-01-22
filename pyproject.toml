@@ -8,6 +8,7 @@ dependencies = [
     "pydoll-python>=2.15.1",
     "click>=8.3.1",
     "pywin32>=311",
+    "selectolax>=0.4.6",
 ]
 
 [dependency-groups]
