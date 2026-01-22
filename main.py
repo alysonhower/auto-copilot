@@ -2,13 +2,13 @@ import asyncio
 import json
 import random
 import re
-from datetime import time
+import time
+from datetime import time as dt_time
 from pathlib import Path
 from typing import List, Optional, Tuple
 
 import click
 import win32com.client
-import pythoncom
 from selectolax.parser import HTMLParser
 
 from pydoll.browser.chromium import Chrome
@@ -22,13 +22,8 @@ from scheduler import (
     retry_with_backoff,
 )
 
-# Arquivo persistente de cookies
 COOKIE_FILE = Path(__file__).parent / ".cookies.json"
 
-# Lock removed - COM handles concurrency
-
-
-# Extensões suportadas
 SUPPORTED_EXTENSIONS = {
     ".xlsx",
     ".xls",
@@ -183,8 +178,7 @@ def extract_tags_from_prompt(prompt_text: str) -> List[str]:
                     seen.add(tag_name)
 
     except Exception as e:
-        click.echo(f"Aviso ao extrair tags do prompt: {e}", err=True)
-        # Fallback? Retorna vazio e processa sem tags específicas
+        click.echo(f"Erro ao extrair tags do prompt: {e}", err=True)
 
     return tags
 
@@ -244,7 +238,6 @@ def get_processed_filenames(filepath: Path, name_column: str = "Arquivo") -> set
     if not filepath.exists():
         return set()
 
-    pythoncom.CoInitialize()
     app = get_excel_app()
     if not app:
         return set()
@@ -391,7 +384,6 @@ def format_excel_table(ws):
 
 def append_to_excel(data: dict, filepath: Path):
     """Adiciona dados ao Excel usando COM com repetição em caso de bloqueio."""
-    pythoncom.CoInitialize()
     abs_path = str(filepath.resolve())
 
     max_retries = 20
@@ -631,23 +623,13 @@ async def interact_and_send(
 
             # Digitar mensagem
             if risky_mode:
-                # Modo arriscado: Colar mensagem (Ctrl+V)
-                # Serializa mensagem para garantir escape seguro no JS
-                json_message = json.dumps(message)
-                await tab.execute_script(
-                    f"navigator.clipboard.writeText({json_message})"
-                )
-                await asyncio.sleep(0.5)
-                # Cola (Ctrl + V)
+                await tab.execute_script(f"navigator.clipboard.writeText({message})")
                 await tab.keyboard.hotkey(Key.CONTROL, Key.V)
             else:
-                # Modo normal: Digitar humanizado
                 await chat_input.type_text(message, humanize=True)
 
-            # User reviewing message before sending (longer pause)
             await asyncio.sleep(random.uniform(1.5, 3.0))
 
-            # Clicar Enviar
             send_button = await tab.find(aria_label="Enviar", timeout=60)
 
             await send_button.click(
@@ -656,7 +638,6 @@ async def interact_and_send(
                 hold_time=random.uniform(0.02, 0.15),
             )
 
-            # Wait for generation to START (stop button appears)
             click.echo(
                 click.style(f"Aguardando início da geração ({filename})...", fg="cyan")
             )
@@ -670,9 +651,7 @@ async def interact_and_send(
                         fg="yellow",
                     )
                 )
-                await asyncio.sleep(random.uniform(0.5, 3.0))
 
-            # Small delay to ensure generation is stable
             await asyncio.sleep(random.uniform(0.5, 3.0))
 
             return tab
@@ -688,17 +667,12 @@ async def interact_and_send(
             await safe_close_tab(tab)
             await asyncio.sleep(random.uniform(1.0, 2.0))
             tab = await browser.new_tab()
-            # Loop continues to next attempt
             continue
 
         except Exception as e:
             click.echo(click.style(f"{e}", fg="red"), err=True)
-            # For other errors, we re-raise to let the outer scheduler handle it,
-            # or we could also retry?
-            # Plan says: upload failure -> immediate retry. Other failures -> raise.
             raise
 
-    # If loop finishes without success
     raise Exception(f"Falha no upload após 3 tentativas para {filename}")
 
 
@@ -719,9 +693,7 @@ async def wait_and_save(
 
     try:
         # Aguarda botão de copiar (indica fim da geração)
-        copy_button = await tab.find(data_testid="CopyButtonTestId", timeout=180)
-
-        await asyncio.sleep(random.uniform(0.5, 1.0))
+        copy_button = await tab.find(aria_label="Copiar Resposta", timeout=180)
 
         await copy_button.click(
             x_offset=random.randint(-5, 5),
@@ -729,9 +701,6 @@ async def wait_and_save(
             hold_time=random.uniform(0.08, 0.15),
         )
 
-        await asyncio.sleep(random.uniform(0.3, 0.5))
-
-        # Ler clipboard
         clipboard_result = await tab.execute_script(
             "return navigator.clipboard.readText()", await_promise=True
         )
@@ -758,8 +727,6 @@ async def wait_and_save(
 
             output_file.parent.mkdir(parents=True, exist_ok=True)
 
-            # async with EXCEL_LOCK:
-            # Lock removed for COM
             append_to_excel(parsed_data, output_file)
             click.echo(
                 click.style(
@@ -818,8 +785,8 @@ async def process_files_logic(
     output_file: Path,
     message: str,
     tags: List[str],
-    start_time: Optional[time] = None,
-    stop_time: Optional[time] = None,
+    start_time: Optional[dt_time] = None,
+    stop_time: Optional[dt_time] = None,
     disable_headless: bool = False,
     risky_mode: bool = False,
     name_column: str = "Arquivo",
@@ -906,7 +873,7 @@ async def process_files_logic(
 
         try:
             await browser.grant_permissions(
-                permissions=["clipboardReadWrite", "clipboardSanitizedWrite"],
+                permissions=["clipboardReadWrite", "clipboardSanitizedWrite"],  # type: ignore
                 origin="https://m365.cloud.microsoft",
             )
         except Exception as e:
