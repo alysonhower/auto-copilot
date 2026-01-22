@@ -25,7 +25,9 @@ from scheduler import (
 # Arquivo persistente de cookies
 COOKIE_FILE = Path(__file__).parent / ".cookies.json"
 
-# Lock removed - COM handles concurrency
+# Lock removed - COM handles concurrency (Excel)
+# Lock for Clipboard (Browser Concurrency)
+CLIPBOARD_LOCK = asyncio.Lock()
 
 
 # Extensões suportadas
@@ -634,12 +636,15 @@ async def interact_and_send(
                 # Modo arriscado: Colar mensagem (Ctrl+V)
                 # Serializa mensagem para garantir escape seguro no JS
                 json_message = json.dumps(message)
-                await tab.execute_script(
-                    f"navigator.clipboard.writeText({json_message})"
-                )
-                await asyncio.sleep(0.5)
-                # Cola (Ctrl + V)
-                await tab.keyboard.hotkey(Key.CONTROL, Key.V)
+
+                # Protect clipboard access
+                async with CLIPBOARD_LOCK:
+                    await tab.execute_script(
+                        f"navigator.clipboard.writeText({json_message})"
+                    )
+                    await asyncio.sleep(0.5)
+                    # Cola (Ctrl + V)
+                    await tab.keyboard.hotkey(Key.CONTROL, Key.V)
             else:
                 # Modo normal: Digitar humanizado
                 await chat_input.type_text(message, humanize=True)
@@ -721,33 +726,71 @@ async def wait_and_save(
         # Aguarda botão de copiar (indica fim da geração)
         copy_button = await tab.find(data_testid="CopyButtonTestId", timeout=180)
 
-        await asyncio.sleep(random.uniform(0.5, 1.0))
+        async with CLIPBOARD_LOCK:
+            # Clear clipboard to avoid reading stale data (like the prompt itself from risky mode)
+            # We assume the user wants the new content, not what was there before.
+            try:
+                await tab.execute_script("navigator.clipboard.writeText('')")
+            except Exception as e:
+                click.echo(
+                    click.style(
+                        f"Aviso: Não foi possível limpar clipboard: {e}", fg="yellow"
+                    ),
+                    err=True,
+                )
 
-        await copy_button.click(
-            x_offset=random.randint(-5, 5),
-            y_offset=random.randint(-3, 3),
-            hold_time=random.uniform(0.08, 0.15),
-        )
+            await asyncio.sleep(random.uniform(0.5, 1.0))
 
-        await asyncio.sleep(random.uniform(0.3, 0.5))
-
-        # Ler clipboard
-        clipboard_result = await tab.execute_script(
-            "return navigator.clipboard.readText()", await_promise=True
-        )
-
-        try:
-            response_text = clipboard_result["result"]["result"]["value"]
-        except (KeyError, TypeError) as e:
-            click.echo(
-                click.style(
-                    f"Estrutura inesperada do clipboard ({filename}): {e}", fg="red"
-                ),
-                err=True,
-            )
+            # Tentar clicar no botão de cópia algumas vezes se o clipboard continuar vazio
             response_text = ""
 
+            # Max retries for clicking/copying
+            for copy_attempt in range(2):
+                await copy_button.click(
+                    x_offset=random.randint(-12, 12),
+                    y_offset=random.randint(-8, 8),
+                    hold_time=random.uniform(0.15, 0.35),
+                )
+
+                await asyncio.sleep(random.uniform(0.5, 1.0))
+
+                # Ler clipboard (com retries de leitura)
+                for _ in range(3):
+                    clipboard_result = await tab.execute_script(
+                        "return navigator.clipboard.readText()", await_promise=True
+                    )
+
+                    try:
+                        current_text = clipboard_result["result"]["result"]["value"]
+                    except (KeyError, TypeError):
+                        current_text = ""
+
+                    if current_text:
+                        response_text = current_text
+                        break
+
+                    await asyncio.sleep(random.uniform(0.5, 1.0))
+
+                if response_text:
+                    break
+
+                click.echo(
+                    click.style(
+                        f"Clipboard vazio após clique ({filename}), tentando novamente...",
+                        fg="yellow",
+                    ),
+                    err=True,
+                )
+                await asyncio.sleep(random.uniform(0.5, 1.0))
+
         if response_text:
+            click.echo(
+                click.style(
+                    f"\n--- DEBUG: Conteúdo extraído do Copilot ({filename}) ---\n{response_text}\n-----------------------------------",
+                    fg="magenta",
+                )
+            )
+
             attachment_name = file_path.stem
             parsed_data = parse_copilot_response(
                 response_text,
