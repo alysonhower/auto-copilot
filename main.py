@@ -13,6 +13,7 @@ from selectolax.parser import HTMLParser
 
 from pydoll.browser.chromium import Chrome
 from pydoll.browser.options import ChromiumOptions
+from pydoll.constants import Key
 
 from scheduler import (
     parse_time,
@@ -316,6 +317,77 @@ def get_processed_filenames(filepath: Path) -> set:
     return processed
 
 
+def format_excel_table(ws):
+    """
+    Formata a planilha como uma Tabela Oficial do Excel e aplica estilos.
+    """
+    try:
+        # Constantes Excel
+        xlSrcRange = 1
+        xlYes = 1
+        xlCenter = -4108
+        xlVAlignCenter = -4108
+        xlContinuous = 1
+        xlThin = 2
+
+        used_range = ws.UsedRange
+
+        # Ignora se planilha vazia
+        if used_range.Count == 1 and not used_range.Value:
+            try:
+                # Tenta verificar se a unica celula tem valor (Count 1 as vezes engana)
+                if not ws.Cells(1, 1).Value:
+                    return
+            except Exception:
+                return
+
+        # 1. Cria ou Atualiza Tabela (ListObject)
+        tbl = None
+        if ws.ListObjects.Count == 0:
+            try:
+                tbl = ws.ListObjects.Add(xlSrcRange, used_range, None, xlYes)
+                tbl.Name = "CopilotData"
+                tbl.ShowAutoFilter = True
+            except Exception as e:
+                click.echo(f"Aviso ao criar tabela: {e}", err=True)
+        else:
+            try:
+                tbl = ws.ListObjects(1)
+                tbl.Resize(used_range)
+            except Exception:
+                pass
+
+        # Aplica estilo neutro
+        if tbl:
+            try:
+                tbl.TableStyle = "TableStyleLight9"
+            except Exception:
+                pass
+
+        # 2. Formatação de Fonte e Alinhamento
+        # Aplica em TODO o UsedRange (Headers + Data)
+        used_range.Font.Name = "Calibri"
+        used_range.Font.Size = 11
+        used_range.HorizontalAlignment = xlCenter
+        used_range.VerticalAlignment = xlVAlignCenter
+        used_range.WrapText = True
+
+        # 3. Bordas (All Borders)
+        try:
+            used_range.Borders.LineStyle = xlContinuous
+            used_range.Borders.Weight = xlThin
+        except Exception:
+            pass
+
+        # 4. AutoFit Colunas
+        # AutoFit as vezes deixa colunas muito largas para textos longos (ex: corpo do email)
+        # Mas é o pedido: "proper headers... formatting etc"
+        used_range.Columns.AutoFit()
+
+    except Exception as e:
+        click.echo(f"Erro não crítico ao formatar tabela: {e}", err=True)
+
+
 def append_to_excel(data: dict, filepath: Path):
     """Adiciona dados ao Excel usando COM com repetição em caso de bloqueio."""
     pythoncom.CoInitialize()
@@ -389,6 +461,9 @@ def append_to_excel(data: dict, filepath: Path):
                     # New column? Append logic could go here but skipping for simplicity
                     pass
 
+            # Aplica formatação de tabela
+            format_excel_table(ws)
+
             # Save logic: Only save/close if we opened it.
             # If user has it open, changes appear live.
             if opened_by_us:
@@ -436,7 +511,9 @@ async def safe_close_tab(tab, timeout: float = 5.0):
         click.echo(click.style(f"Não foi possível fechar aba: {e}", fg="red"), err=True)
 
 
-async def interact_and_send(browser, tab, file_path: Path, message: str):
+async def interact_and_send(
+    browser, tab, file_path: Path, message: str, risky_mode: bool = False
+):
     """
     Realiza a interação até clicar em 'Enviar'.
     Retorna a aba ativa (pode mudar em caso de retry).
@@ -464,7 +541,7 @@ async def interact_and_send(browser, tab, file_path: Path, message: str):
             try:
                 # 1. Clicar no accordion "Chat temporário"
                 chat_temp_accordion = await tab.find(
-                    data_automation_id="newPrivateChatMenuButton", timeout=30
+                    data_automation_id="newPrivateChatMenuButton", timeout=60
                 )
 
                 click.echo(click.style("Abrindo Chat temporário...", fg="cyan"))
@@ -478,7 +555,7 @@ async def interact_and_send(browser, tab, file_path: Path, message: str):
 
                 # 2. Clicar no botão "Chat temporário"
                 chat_temp_button = await tab.find(
-                    data_automation_id="newPrivateChatButton", timeout=30
+                    data_automation_id="newPrivateChatButton", timeout=60
                 )
 
                 await chat_temp_button.click(
@@ -547,8 +624,20 @@ async def interact_and_send(browser, tab, file_path: Path, message: str):
 
             click.echo(click.style(f"Digitando prompt ({filename})...", fg="cyan"))
 
-            # Digitar mensagem (recebida como parâmetro)
-            await chat_input.type_text(message, humanize=True)
+            # Digitar mensagem
+            if risky_mode:
+                # Modo arriscado: Colar mensagem (Ctrl+V)
+                # Serializa mensagem para garantir escape seguro no JS
+                json_message = json.dumps(message)
+                await tab.execute_script(
+                    f"navigator.clipboard.writeText({json_message})"
+                )
+                await asyncio.sleep(0.5)
+                # Cola (Ctrl + V)
+                await tab.keyboard.hotkey(Key.CONTROL, Key.V)
+            else:
+                # Modo normal: Digitar humanizado
+                await chat_input.type_text(message, humanize=True)
 
             # User reviewing message before sending (longer pause)
             await asyncio.sleep(random.uniform(1.5, 3.0))
@@ -722,6 +811,7 @@ async def process_files_logic(
     start_time: Optional[time] = None,
     stop_time: Optional[time] = None,
     disable_headless: bool = False,
+    risky_mode: bool = False,
 ):
     """Lógica principal de orquestração do navegador."""
     """Lógica principal de orquestração do navegador."""
@@ -854,6 +944,7 @@ async def process_files_logic(
                         tab,
                         file_path,
                         message,
+                        risky_mode,  # Pass risky_mode
                         max_retries=None,  # Unlimited until success
                         start_time=start_time,
                         stop_time=stop_time,
@@ -861,7 +952,9 @@ async def process_files_logic(
                 else:
                     # After first success: no retry, skip on error
                     # (likely file-specific issue)
-                    tab = await interact_and_send(browser, tab, file_path, message)
+                    tab = await interact_and_send(
+                        browser, tab, file_path, message, risky_mode=risky_mode
+                    )
 
                 success = True
                 first_success = True
@@ -965,7 +1058,13 @@ async def process_files_logic(
     default=False,
     help="Desabilitar modo headless (mostrar o navegador)",
 )
-def main(prompt, paths, output, start, stop, disable_headless):
+@click.option(
+    "--risky",
+    is_flag=True,
+    default=False,
+    help="Habilita modo arriscado (copiar/colar prompt) para maior velocidade",
+)
+def main(prompt, paths, output, start, stop, disable_headless, risky):
     """
     Auto-Copilot CLI.
 
@@ -978,6 +1077,36 @@ def main(prompt, paths, output, start, stop, disable_headless):
            Diretórios são escaneados recursivamente por arquivos suportados
            (.xlsx, .xls, .md, .txt, .pdf, .docx, .jpg, .jpeg, .png).
     """
+    if risky:
+        click.echo(
+            click.style(
+                "⚠️  MODO ARRISCADO HABILITADO  ⚠️", fg="yellow", bold=True, blink=True
+            )
+        )
+        click.echo(
+            click.style(
+                "Isso fará com que o prompt seja colado (Ctrl+V) em vez de digitado.",
+                fg="yellow",
+            )
+        )
+        click.echo(
+            click.style(
+                "Isso torna o processo mais rápido, mas o comportamento é mais parecido com o de um robô.",
+                fg="yellow",
+            )
+        )
+        click.echo("")
+
+        confirm = click.prompt(
+            "Deseja continuar? [Sim/sim/s]", default="Não", show_default=True
+        )
+        if confirm.lower() not in ["sim", "s"]:
+            click.echo(click.style("Operação cancelada pelo usuário.", fg="red"))
+            return
+        click.echo(
+            click.style("Modo arriscado confirmado. Prosseguindo...", fg="green")
+        )
+
     # Load message content (from file or direct string)
     try:
         message_content = load_message_content(prompt)
@@ -1035,6 +1164,7 @@ def main(prompt, paths, output, start, stop, disable_headless):
             parsed_start,
             parsed_stop,
             disable_headless,
+            risky,
         )
     )
 
