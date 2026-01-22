@@ -1,8 +1,10 @@
+from pydoll.protocol.browser.types import PermissionType
 import asyncio
 import json
 import random
 import re
-from datetime import time
+import time
+from datetime import time as dt_time
 from pathlib import Path
 from typing import List, Optional, Tuple
 
@@ -71,7 +73,6 @@ async def load_cookies(tab):
             simplified_cookies.append(simplified)
 
         await tab.set_cookies(simplified_cookies)
-        await tab.set_cookies(simplified_cookies)
         click.echo(
             click.style(
                 f"Carregados {len(simplified_cookies)} cookies de {COOKIE_FILE}",
@@ -88,7 +89,6 @@ async def save_cookies(browser):
     """Salva cookies após login bem-sucedido."""
     try:
         cookies = await browser.get_cookies()
-        COOKIE_FILE.write_text(json.dumps(cookies, indent=2), encoding="utf-8")
         COOKIE_FILE.write_text(json.dumps(cookies, indent=2), encoding="utf-8")
         click.echo(
             click.style(f"Salvos {len(cookies)} cookies em {COOKIE_FILE}", fg="green")
@@ -528,7 +528,7 @@ async def interact_and_send(
         try:
             click.echo(
                 click.style(
-                    f"Iniciando interação para: {filename} (Tentativa {attempt + 1}/3)",
+                    f"Iniciando interação ({filename}) - Tentativa {attempt + 1}/3...",
                     fg="cyan",
                 )
             )
@@ -547,7 +547,9 @@ async def interact_and_send(
                     data_automation_id="newPrivateChatMenuButton", timeout=60
                 )
 
-                click.echo(click.style("Abrindo Chat temporário...", fg="cyan"))
+                click.echo(
+                    click.style(f"Abrindo Chat temporário ({filename})...", fg="cyan")
+                )
 
                 await chat_temp_accordion.click(
                     x_offset=random.randint(-5, 5),
@@ -573,14 +575,16 @@ async def interact_and_send(
 
             except Exception as e:
                 click.echo(
-                    click.style(f"Erro ao selecionar Chat temporário: {e}", fg="red"),
+                    click.style(
+                        f"Erro ao selecionar Chat temporário ({filename}): {e}",
+                        fg="red",
+                    ),
                     err=True,
                 )
                 raise
-                raise
 
             # === ANEXAR ARQUIVO ===
-            click.echo(click.style("Abrindo menu de anexos...", fg="cyan"))
+            click.echo(click.style(f"Abrindo menu de anexos ({filename})", fg="cyan"))
 
             try:
                 plus_menu_btn = await tab.find(data_testid="PlusMenuButton", timeout=60)
@@ -673,8 +677,6 @@ async def interact_and_send(
             # Small delay to ensure generation is stable
             await asyncio.sleep(random.uniform(0.5, 3.0))
 
-            click.echo(click.style(f"Solicitação enviada ({filename})...", fg="green"))
-            return tab
             return tab
 
         except UploadFailedError as e:
@@ -760,8 +762,6 @@ async def wait_and_save(
 
             # async with EXCEL_LOCK:
             # Lock removed for COM
-            # async with EXCEL_LOCK:
-            # Lock removed for COM
             append_to_excel(parsed_data, output_file)
             click.echo(
                 click.style(
@@ -820,13 +820,12 @@ async def process_files_logic(
     output_file: Path,
     message: str,
     tags: List[str],
-    start_time: Optional[time] = None,
-    stop_time: Optional[time] = None,
+    start_time: Optional[dt_time] = None,
+    stop_time: Optional[dt_time] = None,
     disable_headless: bool = False,
     risky_mode: bool = False,
     name_column: str = "Arquivo",
 ):
-    """Lógica principal de orquestração do navegador."""
     """Lógica principal de orquestração do navegador."""
     if not files:
         click.echo(
@@ -909,7 +908,10 @@ async def process_files_logic(
 
         try:
             await browser.grant_permissions(
-                permissions=["clipboardReadWrite", "clipboardSanitizedWrite"],
+                permissions=[
+                    PermissionType.CLIPBOARD_READ_WRITE,
+                    PermissionType.CLIPBOARD_SANITIZED_WRITE,
+                ],
                 origin="https://m365.cloud.microsoft",
             )
         except Exception as e:
@@ -920,116 +922,129 @@ async def process_files_logic(
         waiting_tasks = []
         first_success = False  # Track if we've had at least one success
 
-        click.echo(
-            click.style(
-                f"Iniciando processamento de {len(pending_files)} arquivos...",
-                fg="green",
+        try:
+            click.echo(
+                click.style(
+                    f"Iniciando processamento de {len(pending_files)} arquivos...",
+                    fg="green",
+                )
             )
-        )
 
-        for i, file_path in enumerate(pending_files):
-            # Check schedule before each file
-            if start_time and stop_time:
-                if not is_within_schedule(start_time, stop_time):
-                    await wait_until_schedule_starts(start_time, stop_time)
+            for i, file_path in enumerate(pending_files):
+                # Check schedule before each file
+                if start_time and stop_time:
+                    if not is_within_schedule(start_time, stop_time):
+                        await wait_until_schedule_starts(start_time, stop_time)
 
-            # Determina qual aba usar
-            if i == 0:
-                tab = first_tab
-            else:
-                click.echo(
-                    click.style(f"Abrindo nova aba para {file_path.name}...", fg="cyan")
-                )
-                tab = await browser.new_tab()
-
-            # 1. PARTE SEQUENCIAL: Interagir e Enviar
-            try:
-                if not first_success:
-                    # Before first success: unlimited retry with backoff
-                    # (system might not be ready, e.g. Copilot not released yet)
-                    # Before first success: unlimited retry with backoff
-                    # (system might not be ready, e.g. Copilot not released yet)
-                    tab = await retry_with_backoff(
-                        interact_and_send,
-                        browser,  # Pass browser
-                        tab,
-                        file_path,
-                        message,
-                        risky_mode,  # Pass risky_mode
-                        max_retries=None,  # Unlimited until success
-                        start_time=start_time,
-                        stop_time=stop_time,
-                    )
+                # Determina qual aba usar
+                if i == 0:
+                    tab = first_tab
                 else:
-                    # After first success: no retry, skip on error
-                    # (likely file-specific issue)
-                    tab = await interact_and_send(
-                        browser, tab, file_path, message, risky_mode=risky_mode
+                    click.echo(
+                        click.style(
+                            f"Abrindo nova aba para {file_path.name}...", fg="cyan"
+                        )
+                    )
+                    tab = await browser.new_tab()
+
+                # 1. PARTE SEQUENCIAL: Interagir e Enviar
+                try:
+                    if not first_success:
+                        # Before first success: unlimited retry with backoff
+                        # (system might not be ready, e.g. Copilot not released yet)
+                        tab = await retry_with_backoff(
+                            interact_and_send,
+                            browser,  # Pass browser
+                            tab,
+                            file_path,
+                            message,
+                            risky_mode,  # Pass risky_mode
+                            max_retries=None,  # Unlimited until success
+                            start_time=start_time,
+                            stop_time=stop_time,
+                        )
+                    else:
+                        # After first success: no retry, skip on error
+                        # (likely file-specific issue)
+                        tab = await interact_and_send(
+                            browser, tab, file_path, message, risky_mode=risky_mode
+                        )
+
+                    success = True
+                    first_success = True
+                except Exception as e:
+                    if not first_success:
+                        # Should only get here if schedule ended
+                        click.echo(
+                            f"Falha definitiva para {file_path.name}: {e}", err=True
+                        )
+                    else:
+                        click.echo(f"Erro com {file_path.name}, pulando: {e}", err=True)
+                    success = False
+
+                if success:
+                    # 2. PARTE PARALELA: Aguardar resposta
+                    task = asyncio.create_task(
+                        wait_and_save(tab, file_path, output_file, tags, name_column)
+                    )
+                    waiting_tasks.append((task, tab))
+                else:
+                    if tab != first_tab:
+                        await safe_close_tab(tab)
+
+                # === GERENCIAMENTO DE MEMÓRIA (FECHAR ABAS ANTIGAS) ===
+                # Se atingir 10 abas abertas aguardando, fecha as 5 mais antigas.
+                if len(waiting_tasks) >= 10:
+                    click.echo(
+                        "Limite de 10 abas atingido. Fechando as 5 mais antigas para liberar memória..."
                     )
 
-                success = True
-                first_success = True
-            except Exception as e:
-                if not first_success:
-                    # Should only get here if schedule ended
-                    click.echo(f"Falha definitiva para {file_path.name}: {e}", err=True)
-                else:
-                    click.echo(f"Erro com {file_path.name}, pulando: {e}", err=True)
-                success = False
+                    # Seleciona as 5 tarefas mais antigas (primeiros 5 da lista)
+                    tasks_to_close = waiting_tasks[:5]
+                    waiting_tasks = waiting_tasks[5:]
 
-            if success:
-                # 2. PARTE PARALELA: Aguardar resposta
-                task = asyncio.create_task(
-                    wait_and_save(tab, file_path, output_file, tags, name_column)
-                )
-                waiting_tasks.append((task, tab))
-            else:
-                if tab != first_tab:
-                    await safe_close_tab(tab)
+                    # Separa tasks e tabs
+                    tasks_only = [t for t, _ in tasks_to_close]
+                    tabs_to_close = [tab_ for _, tab_ in tasks_to_close]
 
-            # === GERENCIAMENTO DE MEMÓRIA (FECHAR ABAS ANTIGAS) ===
-            # Se atingir 10 abas abertas aguardando, fecha as 5 mais antigas.
-            if len(waiting_tasks) >= 10:
-                click.echo(
-                    "Limite de 10 abas atingido. Fechando as 5 mais antigas para liberar memória..."
-                )
+                    # Aguarda tasks terminarem
+                    await asyncio.gather(*tasks_only, return_exceptions=True)
 
-                # Seleciona as 5 tarefas mais antigas (primeiros 5 da lista)
-                tasks_to_close = waiting_tasks[:5]
-                waiting_tasks = waiting_tasks[5:]
+                    # Fecha as abas (simulando humano fechando uma por uma)
+                    for old_tab in tabs_to_close:
+                        if old_tab != first_tab:
+                            await safe_close_tab(old_tab)
+                            await asyncio.sleep(random.uniform(1.0, 2.0))
 
-                # Separa tasks e tabs
-                tasks_only = [t for t, _ in tasks_to_close]
-                tabs_to_close = [tab_ for _, tab_ in tasks_to_close]
+                    click.echo("Limpeza de memória concluída (5 abas fechadas).")
 
-                # Aguarda tasks terminarem
+            if waiting_tasks:
+                click.echo("Todas as solicitações enviadas. Aguardando respostas...")
+                tasks_only = [t for t, _ in waiting_tasks]
                 await asyncio.gather(*tasks_only, return_exceptions=True)
 
-                # Fecha as abas (simulando humano fechando uma por uma)
-                for old_tab in tabs_to_close:
-                    if old_tab != first_tab:
-                        await safe_close_tab(old_tab)
-                        await asyncio.sleep(random.uniform(1.0, 2.0))
+        except KeyboardInterrupt:
+            click.echo(
+                click.style(
+                    "\n⚠️  Interrupção detectada (Ctrl+C). Salvando cookies antes de sair...",
+                    fg="yellow",
+                    bold=True,
+                )
+            )
+        finally:
+            # Always save cookies, whether interrupted or completed normally
+            await save_cookies(browser)
 
-                click.echo("Limpeza de memória concluída (5 abas fechadas).")
+            click.echo("Limpando abas...")
 
-        if waiting_tasks:
-            click.echo("Todas as solicitações enviadas. Aguardando respostas...")
-            tasks_only = [t for t, _ in waiting_tasks]
-            await asyncio.gather(*tasks_only, return_exceptions=True)
+            all_tabs = [tab for _, tab in waiting_tasks]
+            if first_tab not in all_tabs:
+                all_tabs.append(first_tab)
 
-        await save_cookies(browser)
+            for tab in all_tabs:
+                await safe_close_tab(tab)
 
-        click.echo("Limpando abas...")
-
-        all_tabs = [tab for _, tab in waiting_tasks]
-        if first_tab not in all_tabs:
-            all_tabs.append(first_tab)
-
-        for tab in all_tabs:
-            await safe_close_tab(tab)
-
-        await asyncio.sleep(0.5)
+            await asyncio.sleep(0.5)
 
 
 @click.command()

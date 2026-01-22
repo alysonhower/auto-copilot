@@ -149,7 +149,7 @@ def format_duration(seconds: int) -> str:
 async def retry_with_backoff(
     coro_func,
     *args,
-    max_retries: int = None,
+    max_retries: int | None = None,
     initial_delay: int = DEFAULT_INITIAL_DELAY,
     max_delay: int = DEFAULT_MAX_DELAY,
     start_time: Optional[time] = None,
