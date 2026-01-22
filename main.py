@@ -415,6 +415,7 @@ async def interact_and_send(tab, file_path: Path, message: str):
 
         # Focar chat
         chat_input = await tab.find(aria_label="Copilot de Mensagens", timeout=60)
+
         await chat_input.click(
             x_offset=random.randint(-5, 5),
             y_offset=random.randint(-3, 3),
@@ -437,8 +438,21 @@ async def interact_and_send(tab, file_path: Path, message: str):
             hold_time=random.uniform(0.09, 0.18),
         )
 
-        # User watching AI confirmation that generation started
-        await asyncio.sleep(random.uniform(1.5, 3.0))
+        # Wait for generation to START (stop button appears)
+        # This indicates the AI has started generating a response
+        click.echo(f"Aguardando início da geração para {filename}...")
+        try:
+            await tab.find(aria_label="Interromper geração", timeout=60)
+            click.echo(f"✓ Geração iniciada para {filename}.")
+        except Exception:
+            # If stop button doesn't appear, fallback to delay
+            click.echo(
+                f"⚠️ Botão de parar não encontrado, assumindo geração iniciada para {filename}."
+            )
+            await asyncio.sleep(random.uniform(1.5, 3.0))
+
+        # Small delay to ensure generation is stable
+        await asyncio.sleep(random.uniform(0.5, 1.0))
 
         click.echo(f"Solicitação enviada para {filename}.")
         return True
