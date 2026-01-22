@@ -542,6 +542,7 @@ async def process_files_logic(
     message: str,
     start_time: Optional[time] = None,
     stop_time: Optional[time] = None,
+    disable_headless: bool = False,
 ):
     """Lógica principal de orquestração do navegador."""
     if not files:
@@ -580,8 +581,10 @@ async def process_files_logic(
     # WebRTC IP leak prevention
     options.add_argument("--force-webrtc-ip-handling-policy=disable_non_proxied_udp")
 
-    # options.add_argument("--headless=new")
-    options.add_argument("--window-size=1920,1080")
+    # Headless mode (enabled by default, use --disable-headless to show browser)
+    if not disable_headless:
+        options.add_argument("--headless=new")
+        options.add_argument("--window-size=1920,1080")
 
     async with Chrome(options=options) as browser:
         first_tab = await browser.start()
@@ -728,7 +731,14 @@ async def process_files_logic(
     default=None,
     help="Hora de término do processamento (HH:MM, ex: 20:20)",
 )
-def main(prompt, paths, output, start, stop):
+@click.option(
+    "--disable-headless",
+    "-dh",
+    is_flag=True,
+    default=False,
+    help="Desabilitar modo headless (mostrar o navegador)",
+)
+def main(prompt, paths, output, start, stop, disable_headless):
     """
     Auto-Copilot CLI.
 
@@ -782,7 +792,12 @@ def main(prompt, paths, output, start, stop):
     # Executa o loop assíncrono
     asyncio.run(
         process_files_logic(
-            files, output_file, message_content, parsed_start, parsed_stop
+            files,
+            output_file,
+            message_content,
+            parsed_start,
+            parsed_stop,
+            disable_headless,
         )
     )
 
