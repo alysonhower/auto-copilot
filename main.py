@@ -71,7 +71,6 @@ async def load_cookies(tab):
             simplified_cookies.append(simplified)
 
         await tab.set_cookies(simplified_cookies)
-        await tab.set_cookies(simplified_cookies)
         click.echo(
             click.style(
                 f"Carregados {len(simplified_cookies)} cookies de {COOKIE_FILE}",
@@ -88,7 +87,6 @@ async def save_cookies(browser):
     """Salva cookies após login bem-sucedido."""
     try:
         cookies = await browser.get_cookies()
-        COOKIE_FILE.write_text(json.dumps(cookies, indent=2), encoding="utf-8")
         COOKIE_FILE.write_text(json.dumps(cookies, indent=2), encoding="utf-8")
         click.echo(
             click.style(f"Salvos {len(cookies)} cookies em {COOKIE_FILE}", fg="green")
@@ -528,7 +526,7 @@ async def interact_and_send(
         try:
             click.echo(
                 click.style(
-                    f"Iniciando interação para: {filename} (Tentativa {attempt + 1}/3)",
+                    f"Iniciando interação ({filename}) - Tentativa {attempt + 1}/3...",
                     fg="cyan",
                 )
             )
@@ -547,7 +545,9 @@ async def interact_and_send(
                     data_automation_id="newPrivateChatMenuButton", timeout=60
                 )
 
-                click.echo(click.style("Abrindo Chat temporário...", fg="cyan"))
+                click.echo(
+                    click.style(f"Abrindo Chat temporário ({filename})...", fg="cyan")
+                )
 
                 await chat_temp_accordion.click(
                     x_offset=random.randint(-5, 5),
@@ -573,14 +573,16 @@ async def interact_and_send(
 
             except Exception as e:
                 click.echo(
-                    click.style(f"Erro ao selecionar Chat temporário: {e}", fg="red"),
+                    click.style(
+                        f"Erro ao selecionar Chat temporário ({filename}): {e}",
+                        fg="red",
+                    ),
                     err=True,
                 )
                 raise
-                raise
 
             # === ANEXAR ARQUIVO ===
-            click.echo(click.style("Abrindo menu de anexos...", fg="cyan"))
+            click.echo(click.style(f"Abrindo menu de anexos ({filename})", fg="cyan"))
 
             try:
                 plus_menu_btn = await tab.find(data_testid="PlusMenuButton", timeout=60)
@@ -673,8 +675,6 @@ async def interact_and_send(
             # Small delay to ensure generation is stable
             await asyncio.sleep(random.uniform(0.5, 3.0))
 
-            click.echo(click.style(f"Solicitação enviada ({filename})...", fg="green"))
-            return tab
             return tab
 
         except UploadFailedError as e:
@@ -760,8 +760,6 @@ async def wait_and_save(
 
             # async with EXCEL_LOCK:
             # Lock removed for COM
-            # async with EXCEL_LOCK:
-            # Lock removed for COM
             append_to_excel(parsed_data, output_file)
             click.echo(
                 click.style(
@@ -826,7 +824,6 @@ async def process_files_logic(
     risky_mode: bool = False,
     name_column: str = "Arquivo",
 ):
-    """Lógica principal de orquestração do navegador."""
     """Lógica principal de orquestração do navegador."""
     if not files:
         click.echo(
@@ -945,8 +942,6 @@ async def process_files_logic(
             # 1. PARTE SEQUENCIAL: Interagir e Enviar
             try:
                 if not first_success:
-                    # Before first success: unlimited retry with backoff
-                    # (system might not be ready, e.g. Copilot not released yet)
                     # Before first success: unlimited retry with backoff
                     # (system might not be ready, e.g. Copilot not released yet)
                     tab = await retry_with_backoff(
