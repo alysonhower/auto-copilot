@@ -1,7 +1,9 @@
 import asyncio
+import hashlib
 import json
 import random
 import re
+import time as time_module
 from datetime import time
 from pathlib import Path
 from typing import List, Optional, Tuple
@@ -14,6 +16,7 @@ from selectolax.parser import HTMLParser
 from pydoll.browser.chromium import Chrome
 from pydoll.browser.options import ChromiumOptions
 from pydoll.constants import Key
+from pydoll.protocol.browser.types import PermissionType
 
 from scheduler import (
     parse_time,
@@ -42,6 +45,53 @@ SUPPORTED_EXTENSIONS = {
     ".jpeg",
     ".png",
 }
+
+# Continuous mode configuration
+DEFAULT_REFRESH_INTERVAL = 5  # files between Excel checks
+DEFAULT_IDLE_POLL_INTERVAL = 30  # seconds to wait when idle
+
+
+def hash_prompt(prompt: str) -> str:
+    """Generate a short hash of the prompt for comparison."""
+    return hashlib.md5(prompt.encode()).hexdigest()[:16]
+
+
+def validate_ai_response(
+    response: str,
+    prompt_hash: str,
+    tags: List[str],
+    original_prompt: str,
+) -> bool:
+    """
+    Validate that clipboard content is a valid AI response.
+
+    Checks:
+    - Response is not empty
+    - Response hash differs from prompt hash
+    - Response is not identical to prompt
+    - Response contains at least one expected tag with content (if tags provided)
+    """
+    if not response or not response.strip():
+        return False
+
+    response_hash = hash_prompt(response)
+    if response_hash == prompt_hash:
+        return False
+
+    # Length-based quick check (response should be different)
+    if len(response) == len(original_prompt) and response == original_prompt:
+        return False
+
+    # Check for at least one tag with content
+    if tags:
+        tree = HTMLParser(response)
+        for tag in tags:
+            node = tree.css_first(tag)
+            if node and node.text(strip=True):
+                return True
+        return False  # No tags found with content
+
+    return True  # No tags to validate, accept non-empty different content
 
 
 class UploadFailedError(Exception):
@@ -246,7 +296,7 @@ def get_processed_filenames(filepath: Path, name_column: str = "Arquivo") -> set
     if not filepath.exists():
         return set()
 
-    pythoncom.CoInitialize()
+    pythoncom.CoInitialize()  # type: ignore[attr-defined]
     app = get_excel_app()
     if not app:
         return set()
@@ -393,7 +443,7 @@ def format_excel_table(ws):
 
 def append_to_excel(data: dict, filepath: Path):
     """Adiciona dados ao Excel usando COM com repetição em caso de bloqueio."""
-    pythoncom.CoInitialize()
+    pythoncom.CoInitialize()  # type: ignore[attr-defined]
     abs_path = str(filepath.resolve())
 
     max_retries = 20
@@ -483,7 +533,7 @@ def append_to_excel(data: dict, filepath: Path):
                     f"Excel ocupado (usuário editando?), tentativa {attempt + 1}/{max_retries}...",
                     err=True,
                 )
-                time.sleep(2)
+                time_module.sleep(2)
                 continue
             else:
                 click.echo(f"Erro fatal ao escrever no Excel: {e}", err=True)
@@ -514,14 +564,128 @@ async def safe_close_tab(tab, timeout: float = 5.0):
         click.echo(click.style(f"Não foi possível fechar aba: {e}", fg="red"), err=True)
 
 
+async def get_ai_response_with_validation(
+    tab,
+    copy_button,
+    prompt_hash: str,
+    original_prompt: str,
+    tags: List[str],
+    filename: str,
+    max_attempts: int = 3,
+) -> Optional[str]:
+    """
+    Get AI response from clipboard with validation and retry.
+
+    Returns the validated response text or None if all attempts fail.
+    """
+    for attempt in range(max_attempts):
+        # Clear clipboard before copy
+        try:
+            await tab.execute_script("navigator.clipboard.writeText('')")
+        except Exception as e:
+            click.echo(
+                click.style(f"Aviso: Não foi possível limpar clipboard: {e}", fg="yellow"),
+                err=True,
+            )
+
+        await asyncio.sleep(random.uniform(0.3, 0.6))
+
+        # Click copy button
+        await copy_button.click(
+            x_offset=random.randint(-12, 12),
+            y_offset=random.randint(-8, 8),
+            hold_time=random.uniform(0.15, 0.35),
+            scroll_into_view=True,
+        )
+
+        await asyncio.sleep(random.uniform(0.5, 1.0))
+
+        # Read clipboard with retries
+        response_text = ""
+        for read_attempt in range(3):
+            clipboard_result = await tab.execute_script(
+                "return navigator.clipboard.readText()", await_promise=True
+            )
+
+            try:
+                response_text = clipboard_result["result"]["result"]["value"]
+            except (KeyError, TypeError):
+                response_text = ""
+
+            if response_text:
+                break
+            await asyncio.sleep(random.uniform(0.3, 0.5))
+
+        # Validate response
+        if validate_ai_response(response_text, prompt_hash, tags, original_prompt):
+            if attempt > 0:
+                click.echo(
+                    click.style(
+                        f"Resposta válida obtida na tentativa {attempt + 1} ({filename})",
+                        fg="green",
+                    )
+                )
+            return response_text
+
+        click.echo(
+            click.style(
+                f"Resposta inválida na tentativa {attempt + 1}/{max_attempts} ({filename}), tentando novamente...",
+                fg="yellow",
+            ),
+            err=True,
+        )
+        await asyncio.sleep(random.uniform(0.5, 1.0))
+
+    return None
+
+
+def refresh_pending_files(
+    all_files: List[Path],
+    current_pending: List[Path],
+    output_file: Path,
+    name_column: str,
+) -> Tuple[List[Path], int]:
+    """
+    Refresh the pending files list by re-checking Excel.
+
+    Returns:
+        Tuple of (updated pending list, count of newly added files)
+    """
+    processed_filenames = get_processed_filenames(output_file, name_column=name_column)
+
+    # Find files that are pending (not in Excel)
+    newly_pending = []
+    for f in all_files:
+        if f.stem not in processed_filenames:
+            # Check if already in current pending list
+            if f not in current_pending:
+                newly_pending.append(f)
+
+    if newly_pending:
+        click.echo(
+            click.style(
+                f"Encontrados {len(newly_pending)} arquivo(s) para re-processamento",
+                fg="magenta",
+            )
+        )
+        for f in newly_pending:
+            click.echo(f"  + {f.name}")
+
+    # Combine: current pending + newly pending, preserving order
+    updated_pending = list(current_pending) + newly_pending
+
+    return updated_pending, len(newly_pending)
+
+
 async def interact_and_send(
     browser, tab, file_path: Path, message: str, risky_mode: bool = False
-):
+) -> Tuple:
     """
     Realiza a interação até clicar em 'Enviar'.
-    Retorna a aba ativa (pode mudar em caso de retry).
+    Retorna tupla (aba ativa, hash do prompt) - aba pode mudar em caso de retry.
     """
     filename = file_path.name
+    prompt_hash = hash_prompt(message) if risky_mode else ""
 
     # Retry loop for upload failures
     for attempt in range(3):
@@ -645,6 +809,9 @@ async def interact_and_send(
                     await asyncio.sleep(0.5)
                     # Cola (Ctrl + V)
                     await tab.keyboard.hotkey(Key.CONTROL, Key.V)
+                    # Clear clipboard immediately after paste to avoid contamination
+                    await asyncio.sleep(0.3)
+                    await tab.execute_script("navigator.clipboard.writeText('')")
             else:
                 # Modo normal: Digitar humanizado
                 await chat_input.type_text(message, humanize=True)
@@ -704,7 +871,7 @@ async def interact_and_send(
             # Small delay to ensure generation is stable
             await asyncio.sleep(random.uniform(0.5, 3.0))
 
-            return tab
+            return tab, prompt_hash
 
         except UploadFailedError as e:
             click.echo(
@@ -737,9 +904,12 @@ async def wait_and_save(
     output_file: Path,
     tags: List[str],
     name_column: str = "Arquivo",
+    prompt_hash: str = "",
+    original_prompt: str = "",
 ):
     """
     Aguarda a resposta em uma aba já ativa e salva no Excel.
+    Uses validated clipboard reading when prompt_hash is provided (risky mode).
     """
     filename = file_path.name
     click.echo(
@@ -751,61 +921,72 @@ async def wait_and_save(
         copy_button = await tab.find(data_testid="CopyButtonTestId", timeout=180)
 
         async with CLIPBOARD_LOCK:
-            # Clear clipboard to avoid reading stale data (like the prompt itself from risky mode)
-            # We assume the user wants the new content, not what was there before.
-            try:
-                await tab.execute_script("navigator.clipboard.writeText('')")
-            except Exception as e:
-                click.echo(
-                    click.style(
-                        f"Aviso: Não foi possível limpar clipboard: {e}", fg="yellow"
-                    ),
-                    err=True,
+            if prompt_hash:
+                # Use validated reading for risky mode
+                response_text = await get_ai_response_with_validation(
+                    tab,
+                    copy_button,
+                    prompt_hash,
+                    original_prompt,
+                    tags,
+                    filename,
                 )
-
-            await asyncio.sleep(random.uniform(0.5, 1.0))
-
-            # Tentar clicar no botão de cópia algumas vezes se o clipboard continuar vazio
-            response_text = ""
-
-            # Max retries for clicking/copying
-            for copy_attempt in range(2):
-                await copy_button.click(
-                    x_offset=random.randint(-12, 12),
-                    y_offset=random.randint(-8, 8),
-                    hold_time=random.uniform(0.15, 0.35),
-                )
+            else:
+                # Original behavior for non-risky mode
+                # Clear clipboard to avoid reading stale data
+                try:
+                    await tab.execute_script("navigator.clipboard.writeText('')")
+                except Exception as e:
+                    click.echo(
+                        click.style(
+                            f"Aviso: Não foi possível limpar clipboard: {e}", fg="yellow"
+                        ),
+                        err=True,
+                    )
 
                 await asyncio.sleep(random.uniform(0.5, 1.0))
 
-                # Ler clipboard (com retries de leitura)
-                for _ in range(3):
-                    clipboard_result = await tab.execute_script(
-                        "return navigator.clipboard.readText()", await_promise=True
+                # Tentar clicar no botão de cópia algumas vezes se o clipboard continuar vazio
+                response_text = ""
+
+                # Max retries for clicking/copying
+                for copy_attempt in range(2):
+                    await copy_button.click(
+                        x_offset=random.randint(-12, 12),
+                        y_offset=random.randint(-8, 8),
+                        hold_time=random.uniform(0.15, 0.35),
                     )
-
-                    try:
-                        current_text = clipboard_result["result"]["result"]["value"]
-                    except (KeyError, TypeError):
-                        current_text = ""
-
-                    if current_text:
-                        response_text = current_text
-                        break
 
                     await asyncio.sleep(random.uniform(0.5, 1.0))
 
-                if response_text:
-                    break
+                    # Ler clipboard (com retries de leitura)
+                    for _ in range(3):
+                        clipboard_result = await tab.execute_script(
+                            "return navigator.clipboard.readText()", await_promise=True
+                        )
 
-                click.echo(
-                    click.style(
-                        f"Clipboard vazio após clique ({filename}), tentando novamente...",
-                        fg="yellow",
-                    ),
-                    err=True,
-                )
-                await asyncio.sleep(random.uniform(0.5, 1.0))
+                        try:
+                            current_text = clipboard_result["result"]["result"]["value"]
+                        except (KeyError, TypeError):
+                            current_text = ""
+
+                        if current_text:
+                            response_text = current_text
+                            break
+
+                        await asyncio.sleep(random.uniform(0.5, 1.0))
+
+                    if response_text:
+                        break
+
+                    click.echo(
+                        click.style(
+                            f"Clipboard vazio após clique ({filename}), tentando novamente...",
+                            fg="yellow",
+                        ),
+                        err=True,
+                    )
+                    await asyncio.sleep(random.uniform(0.5, 1.0))
 
         if response_text:
             click.echo(
@@ -890,49 +1071,35 @@ async def process_files_logic(
     disable_headless: bool = False,
     risky_mode: bool = False,
     name_column: str = "Arquivo",
+    continuous: bool = False,
+    refresh_interval: int = DEFAULT_REFRESH_INTERVAL,
+    idle_poll_interval: int = DEFAULT_IDLE_POLL_INTERVAL,
 ):
-    """Lógica principal de orquestração do navegador."""
+    """
+    Lógica principal de orquestração do navegador.
+    
+    Args:
+        files: Lista de arquivos para processar
+        output_file: Caminho do arquivo Excel de saída
+        message: Prompt a ser enviado ao Copilot
+        tags: Tags para extrair da resposta
+        start_time: Hora de início do agendamento (opcional)
+        stop_time: Hora de término do agendamento (opcional)
+        disable_headless: Se True, mostra o navegador
+        risky_mode: Se True, usa clipboard para colar prompt
+        name_column: Nome da coluna para identificar arquivos
+        continuous: Se True, monitora continuamente por arquivos pendentes
+        refresh_interval: Arquivos entre verificações do Excel
+        idle_poll_interval: Segundos para aguardar quando não há arquivos pendentes
+    """
     if not files:
         click.echo(
             click.style("Nenhum arquivo válido encontrado para processar.", fg="red")
         )
         return
 
-    # Verifica arquivos já processados para retomada
-    processed_filenames = get_processed_filenames(output_file, name_column=name_column)
-
-    if processed_filenames:
-        click.echo(
-            click.style(
-                f"Encontrados {len(processed_filenames)} arquivos já processados no Excel.",
-                fg="yellow",
-            )
-        )
-
-    # Filtra arquivos que ainda precisam ser processados
-    pending_files = [f for f in files if f.stem not in processed_filenames]
-    skipped_count = len(files) - len(pending_files)
-
-    if skipped_count > 0:
-        click.echo(
-            click.style(
-                f"Pulando {skipped_count} arquivos já processados.", fg="yellow"
-            )
-        )
-
-    if not pending_files:
-        click.echo(
-            click.style(
-                "Todos os arquivos já foram processados. Nada a fazer.", fg="green"
-            )
-        )
-        return
-
-    click.echo(
-        click.style(
-            f"{len(pending_files)} arquivos pendentes para processamento.", fg="cyan"
-        )
-    )
+    # Keep original file list for continuous mode refresh
+    all_files = list(files)
 
     options = ChromiumOptions()
     options.block_notifications = True
@@ -973,7 +1140,10 @@ async def process_files_logic(
 
         try:
             await browser.grant_permissions(
-                permissions=["clipboardReadWrite", "clipboardSanitizedWrite"],
+                permissions=[
+                    PermissionType.CLIPBOARD_READ_WRITE,
+                    PermissionType.CLIPBOARD_SANITIZED_WRITE,
+                ],
                 origin="https://m365.cloud.microsoft",
             )
         except Exception as e:
@@ -984,101 +1154,183 @@ async def process_files_logic(
         waiting_tasks = []
         first_success = False  # Track if we've had at least one success
 
-        click.echo(
-            click.style(
-                f"Iniciando processamento de {len(pending_files)} arquivos...",
-                fg="green",
+        # Main continuous loop
+        while True:
+            # Get/refresh pending files
+            processed_filenames = get_processed_filenames(output_file, name_column=name_column)
+            pending_files = [f for f in all_files if f.stem not in processed_filenames]
+
+            if processed_filenames:
+                click.echo(
+                    click.style(
+                        f"Encontrados {len(processed_filenames)} arquivos já processados no Excel.",
+                        fg="yellow",
+                    )
+                )
+
+            if not pending_files:
+                if continuous:
+                    click.echo(
+                        click.style(
+                            f"Nenhum arquivo pendente. Aguardando {idle_poll_interval}s...",
+                            fg="cyan",
+                        )
+                    )
+                    await asyncio.sleep(idle_poll_interval)
+                    continue
+                else:
+                    click.echo(
+                        click.style(
+                            "Todos os arquivos já foram processados. Nada a fazer.", fg="green"
+                        )
+                    )
+                    break
+
+            click.echo(
+                click.style(
+                    f"{len(pending_files)} arquivos pendentes para processamento.", fg="cyan"
+                )
             )
-        )
 
-        for i, file_path in enumerate(pending_files):
-            # Check schedule before each file
-            if start_time and stop_time:
-                if not is_within_schedule(start_time, stop_time):
-                    await wait_until_schedule_starts(start_time, stop_time)
-
-            # Determina qual aba usar
-            if i == 0:
-                tab = first_tab
-            else:
-                click.echo(
-                    click.style(f"Abrindo nova aba para {file_path.name}...", fg="cyan")
+            click.echo(
+                click.style(
+                    f"Iniciando processamento de {len(pending_files)} arquivos...",
+                    fg="green",
                 )
-                tab = await browser.new_tab()
+            )
 
-            # 1. PARTE SEQUENCIAL: Interagir e Enviar
-            try:
-                if not first_success:
-                    # Before first success: unlimited retry with backoff
-                    # (system might not be ready, e.g. Copilot not released yet)
-                    tab = await retry_with_backoff(
-                        interact_and_send,
-                        browser,  # Pass browser
-                        tab,
-                        file_path,
-                        message,
-                        risky_mode,  # Pass risky_mode
-                        max_retries=None,  # Unlimited until success
-                        start_time=start_time,
-                        stop_time=stop_time,
-                    )
+            files_processed_this_batch = 0
+            should_refresh = False
+
+            for i, file_path in enumerate(pending_files):
+                # Check schedule before each file
+                if start_time and stop_time:
+                    if not is_within_schedule(start_time, stop_time):
+                        await wait_until_schedule_starts(start_time, stop_time)
+
+                # Determina qual aba usar
+                if i == 0 and not waiting_tasks:
+                    tab = first_tab
                 else:
-                    # After first success: no retry, skip on error
-                    # (likely file-specific issue)
-                    tab = await interact_and_send(
-                        browser, tab, file_path, message, risky_mode=risky_mode
+                    click.echo(
+                        click.style(f"Abrindo nova aba para {file_path.name}...", fg="cyan")
+                    )
+                    tab = await browser.new_tab()
+
+                # 1. PARTE SEQUENCIAL: Interagir e Enviar
+                prompt_hash = ""
+                try:
+                    if not first_success:
+                        # Before first success: unlimited retry with backoff
+                        # (system might not be ready, e.g. Copilot not released yet)
+                        result = await retry_with_backoff(
+                            interact_and_send,
+                            browser,  # Pass browser
+                            tab,
+                            file_path,
+                            message,
+                            risky_mode,  # Pass risky_mode
+                            max_retries=0,  # Will retry indefinitely via schedule
+                            start_time=start_time,
+                            stop_time=stop_time,
+                        )
+                        tab, prompt_hash = result
+                    else:
+                        # After first success: no retry, skip on error
+                        # (likely file-specific issue)
+                        tab, prompt_hash = await interact_and_send(
+                            browser, tab, file_path, message, risky_mode=risky_mode
+                        )
+
+                    success = True
+                    first_success = True
+                except Exception as e:
+                    if not first_success:
+                        # Should only get here if schedule ended
+                        click.echo(f"Falha definitiva para {file_path.name}: {e}", err=True)
+                    else:
+                        click.echo(f"Erro com {file_path.name}, pulando: {e}", err=True)
+                    success = False
+
+                if success:
+                    # 2. PARTE PARALELA: Aguardar resposta
+                    task = asyncio.create_task(
+                        wait_and_save(
+                            tab,
+                            file_path,
+                            output_file,
+                            tags,
+                            name_column,
+                            prompt_hash=prompt_hash,
+                            original_prompt=message,
+                        )
+                    )
+                    waiting_tasks.append((task, tab))
+                    files_processed_this_batch += 1
+                else:
+                    if tab != first_tab:
+                        await safe_close_tab(tab)
+
+                # === GERENCIAMENTO DE MEMÓRIA (FECHAR ABAS ANTIGAS) ===
+                # Se atingir 10 abas abertas aguardando, fecha as 5 mais antigas.
+                if len(waiting_tasks) >= 10:
+                    click.echo(
+                        "Limite de 10 abas atingido. Fechando as 5 mais antigas para liberar memória..."
                     )
 
-                success = True
-                first_success = True
-            except Exception as e:
-                if not first_success:
-                    # Should only get here if schedule ended
-                    click.echo(f"Falha definitiva para {file_path.name}: {e}", err=True)
-                else:
-                    click.echo(f"Erro com {file_path.name}, pulando: {e}", err=True)
-                success = False
+                    # Seleciona as 5 tarefas mais antigas (primeiros 5 da lista)
+                    tasks_to_close = waiting_tasks[:5]
+                    waiting_tasks = waiting_tasks[5:]
 
-            if success:
-                # 2. PARTE PARALELA: Aguardar resposta
-                task = asyncio.create_task(
-                    wait_and_save(tab, file_path, output_file, tags, name_column)
-                )
-                waiting_tasks.append((task, tab))
-            else:
-                if tab != first_tab:
-                    await safe_close_tab(tab)
+                    # Separa tasks e tabs
+                    tasks_only = [t for t, _ in tasks_to_close]
+                    tabs_to_close = [tab_ for _, tab_ in tasks_to_close]
 
-            # === GERENCIAMENTO DE MEMÓRIA (FECHAR ABAS ANTIGAS) ===
-            # Se atingir 10 abas abertas aguardando, fecha as 5 mais antigas.
-            if len(waiting_tasks) >= 10:
-                click.echo(
-                    "Limite de 10 abas atingido. Fechando as 5 mais antigas para liberar memória..."
-                )
+                    # Aguarda tasks terminarem
+                    await asyncio.gather(*tasks_only, return_exceptions=True)
 
-                # Seleciona as 5 tarefas mais antigas (primeiros 5 da lista)
-                tasks_to_close = waiting_tasks[:5]
-                waiting_tasks = waiting_tasks[5:]
+                    # Fecha as abas (simulando humano fechando uma por uma)
+                    for old_tab in tabs_to_close:
+                        if old_tab != first_tab:
+                            await safe_close_tab(old_tab)
+                            await asyncio.sleep(random.uniform(1.0, 2.0))
 
-                # Separa tasks e tabs
-                tasks_only = [t for t, _ in tasks_to_close]
-                tabs_to_close = [tab_ for _, tab_ in tasks_to_close]
+                    click.echo("Limpeza de memória concluída (5 abas fechadas).")
 
-                # Aguarda tasks terminarem
+                # Periodic refresh check in continuous mode
+                if continuous and files_processed_this_batch >= refresh_interval:
+                    click.echo(
+                        click.style(
+                            "Verificando arquivos pendentes...",
+                            fg="cyan",
+                        )
+                    )
+                    remaining_pending = pending_files[i + 1 :]
+                    pending_files, added = refresh_pending_files(
+                        all_files, remaining_pending, output_file, name_column
+                    )
+                    files_processed_this_batch = 0
+                    if added > 0:
+                        # Restart the inner loop with updated list
+                        should_refresh = True
+                        break
+
+            # After batch completion
+            if waiting_tasks:
+                click.echo("Aguardando respostas pendentes...")
+                tasks_only = [t for t, _ in waiting_tasks]
                 await asyncio.gather(*tasks_only, return_exceptions=True)
 
-                # Fecha as abas (simulando humano fechando uma por uma)
-                for old_tab in tabs_to_close:
-                    if old_tab != first_tab:
-                        await safe_close_tab(old_tab)
-                        await asyncio.sleep(random.uniform(1.0, 2.0))
+                # Clean up tabs
+                for task, tab in waiting_tasks:
+                    if tab != first_tab:
+                        await safe_close_tab(tab)
+                        await asyncio.sleep(random.uniform(0.5, 1.0))
 
-                click.echo("Limpeza de memória concluída (5 abas fechadas).")
+                waiting_tasks = []
 
-        if waiting_tasks:
-            click.echo("Todas as solicitações enviadas. Aguardando respostas...")
-            tasks_only = [t for t, _ in waiting_tasks]
-            await asyncio.gather(*tasks_only, return_exceptions=True)
+            if not continuous and not should_refresh:
+                break
 
         await save_cookies(browser)
 
@@ -1144,7 +1396,40 @@ async def process_files_logic(
     default=False,
     help="Habilita modo arriscado (copiar/colar prompt) para maior velocidade",
 )
-def main(prompt, paths, output, start, stop, disable_headless, name_column, risky):
+@click.option(
+    "--continuous",
+    "-c",
+    is_flag=True,
+    default=False,
+    help="Habilita modo contínuo (re-verifica Excel periodicamente por arquivos pendentes)",
+)
+@click.option(
+    "--refresh-interval",
+    "-ri",
+    type=int,
+    default=DEFAULT_REFRESH_INTERVAL,
+    help=f"Número de arquivos entre verificações do Excel (padrão: {DEFAULT_REFRESH_INTERVAL})",
+)
+@click.option(
+    "--idle-poll-interval",
+    "-ipi",
+    type=int,
+    default=DEFAULT_IDLE_POLL_INTERVAL,
+    help=f"Segundos para aguardar quando não há arquivos pendentes (padrão: {DEFAULT_IDLE_POLL_INTERVAL})",
+)
+def main(
+    prompt,
+    paths,
+    output,
+    start,
+    stop,
+    disable_headless,
+    name_column,
+    risky,
+    continuous,
+    refresh_interval,
+    idle_poll_interval,
+):
     """
     Auto-Copilot CLI.
 
@@ -1237,6 +1522,15 @@ def main(prompt, paths, output, start, stop, disable_headless, name_column, risk
     else:
         click.echo("Nenhuma tag específica identificada no prompt.")
 
+    # Show continuous mode info
+    if continuous:
+        click.echo(
+            click.style(
+                f"🔄 Modo contínuo habilitado (refresh a cada {refresh_interval} arquivos, poll a cada {idle_poll_interval}s)",
+                fg="cyan",
+            )
+        )
+
     # Executa o loop assíncrono
     asyncio.run(
         process_files_logic(
@@ -1249,6 +1543,9 @@ def main(prompt, paths, output, start, stop, disable_headless, name_column, risk
             disable_headless,
             risky,
             name_column=name_column,
+            continuous=continuous,
+            refresh_interval=refresh_interval,
+            idle_poll_interval=idle_poll_interval,
         )
     )
 
