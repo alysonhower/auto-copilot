@@ -652,26 +652,50 @@ async def interact_and_send(
             # User reviewing message before sending (longer pause)
             await asyncio.sleep(random.uniform(1.5, 3.0))
 
-            # Clicar Enviar
+            # Clicar Enviar com lógica de retry (pois o upload pode ainda estar finalizando)
             send_button = await tab.find(aria_label="Enviar", timeout=60)
+            generation_started = False
 
-            await send_button.click(
-                x_offset=random.randint(-5, 5),
-                y_offset=random.randint(-5, 5),
-                hold_time=random.uniform(0.02, 0.15),
-            )
+            # Tenta clicar no enviar algumas vezes
+            for send_attempt in range(3):
+                if send_attempt > 0:
+                    click.echo(
+                        click.style(
+                            f"Botão de parar não apareceu. Re-tentando clicar em Enviar ({filename})...",
+                            fg="yellow",
+                        )
+                    )
 
-            # Wait for generation to START (stop button appears)
-            click.echo(
-                click.style(f"Aguardando início da geração ({filename})...", fg="cyan")
-            )
-            try:
-                await tab.find(aria_label="Interromper geração", timeout=60)
-                click.echo(click.style(f"Geração iniciada ({filename})...", fg="green"))
-            except Exception:
+                await send_button.click(
+                    x_offset=random.randint(-5, 5),
+                    y_offset=random.randint(-5, 5),
+                    hold_time=random.uniform(0.05, 0.20),
+                )
+
                 click.echo(
                     click.style(
-                        f"Botão de parar não encontrado, assumindo geração iniciada ({filename})...",
+                        f"Aguardando início da geração ({filename})...", fg="cyan"
+                    )
+                )
+
+                # Verifica se iniciou (botão Parar aparece)
+                try:
+                    # Timeout curto para verificar se o clique surtiu efeito
+                    await tab.find(aria_label="Interromper geração", timeout=8.0)
+                    click.echo(
+                        click.style(f"Geração iniciada ({filename})...", fg="green")
+                    )
+                    generation_started = True
+                    break
+                except Exception:
+                    # Se falhar (timeout), espera um pouco antes de tentar clicar de novo
+                    # Isso dá tempo para o upload terminar se for o caso
+                    await asyncio.sleep(random.uniform(2.0, 4.0))
+
+            if not generation_started:
+                click.echo(
+                    click.style(
+                        f"Botão de parar não encontrado após tentativas, assumindo geração iniciada ({filename})...",
                         fg="yellow",
                     )
                 )
