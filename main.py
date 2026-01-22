@@ -97,7 +97,7 @@ def load_message_content(message_input: str) -> str:
         if message_path.suffix.lower() == ".md":
             try:
                 content = message_path.read_text(encoding="utf-8")
-                click.echo(f"📄 Mensagem carregada de: {message_path}")
+                click.echo(f"Mensagem carregada de: {message_path}")
                 return content.strip()
             except Exception as e:
                 click.echo(
@@ -301,7 +301,7 @@ def append_to_excel(data: dict, filepath: Path):
             err_str = str(e)
             if "Call was rejected by callee" in err_str or "-2147418111" in err_str:
                 click.echo(
-                    f"⚠️ Excel ocupado (usuário editando?), tentativa {attempt + 1}/{max_retries}...",
+                    f"Excel ocupado (usuário editando?), tentativa {attempt + 1}/{max_retries}...",
                     err=True,
                 )
                 time.sleep(2)
@@ -328,9 +328,9 @@ async def safe_close_tab(tab, timeout: float = 5.0):
     try:
         await asyncio.wait_for(tab.close(), timeout=timeout)
     except asyncio.TimeoutError:
-        click.echo("Aviso: Timeout ao fechar aba (ignorando)", err=True)
+        click.echo("Timeout ao fechar aba (ignorando)", err=True)
     except Exception as e:
-        click.echo(f"Aviso: Não foi possível fechar aba: {e}", err=True)
+        click.echo(f"Não foi possível fechar aba: {e}", err=True)
 
 
 async def interact_and_send(tab, file_path: Path, message: str):
@@ -344,16 +344,10 @@ async def interact_and_send(tab, file_path: Path, message: str):
     try:
         # Navega se necessário
         current_url = await tab.current_url
+
         if "m365.cloud.microsoft/chat" not in current_url:
             await tab.go_to("https://m365.cloud.microsoft/chat")
-            await asyncio.sleep(random.uniform(2.0, 4.0))
-
-        # Simulate user reading/exploring the page
-        for _ in range(random.randint(1, 2)):
-            await tab.scroll.by("down", random.randint(100, 300), humanize=True)
-            await asyncio.sleep(random.uniform(0.5, 1.0))
-        await tab.scroll.to_top()
-        await asyncio.sleep(random.uniform(0.3, 0.6))
+            await asyncio.sleep(random.uniform(0.5, 3.0))
 
         # === SELECIONAR CHAT TEMPORÁRIO ===
         try:
@@ -361,23 +355,28 @@ async def interact_and_send(tab, file_path: Path, message: str):
             chat_temp_accordion = await tab.find(
                 data_automation_id="newPrivateChatMenuButton", timeout=30
             )
+
+            click.echo("Abrindo Chat temporário...")
+
             await chat_temp_accordion.click(
                 x_offset=random.randint(-5, 5),
                 y_offset=random.randint(-5, 5),
-                hold_time=random.uniform(0.08, 0.15),
+                hold_time=random.uniform(0.02, 0.15),
             )
-            await asyncio.sleep(random.uniform(0.5, 1.0))
+            await asyncio.sleep(random.uniform(0.1, 1.0))
 
             # 2. Clicar no botão "Chat temporário"
             chat_temp_button = await tab.find(
                 data_automation_id="newPrivateChatButton", timeout=30
             )
+
             await chat_temp_button.click(
                 x_offset=random.randint(-5, 5),
                 y_offset=random.randint(-5, 5),
-                hold_time=random.uniform(0.08, 0.15),
+                hold_time=random.uniform(0.02, 0.15),
             )
-            await asyncio.sleep(random.uniform(1.0, 2.0))  # Wait for new chat context
+
+            await asyncio.sleep(random.uniform(0.1, 1.0))  # Wait for new chat context
 
         except Exception as e:
             click.echo(f"Erro ao selecionar Chat temporário: {e}", err=True)
@@ -386,12 +385,14 @@ async def interact_and_send(tab, file_path: Path, message: str):
             raise
 
         # === ANEXAR ARQUIVO ===
+        click.echo("Abrindo menu de anexos...")
+
         try:
             plus_menu_btn = await tab.find(data_testid="PlusMenuButton", timeout=60)
             await plus_menu_btn.click(
                 x_offset=random.randint(-5, 5),
                 y_offset=random.randint(-5, 5),
-                hold_time=random.uniform(0.08, 0.15),
+                hold_time=random.uniform(0.02, 0.15),
             )
         except Exception:
             # Tenta recuperar se o menu não abrir ou já estiver aberto?
@@ -399,16 +400,16 @@ async def interact_and_send(tab, file_path: Path, message: str):
             # Se falhar aqui, pode ser que a página não carregou direito.
             raise
 
-        await asyncio.sleep(random.uniform(0.3, 0.8))
+        await asyncio.sleep(random.uniform(0.1, 1.0))
 
         async with tab.expect_file_chooser(files=[file_path]):
             upload_menu_item = await tab.find(
-                text="Carregar imagens e arquivos", timeout=5
+                text="Carregar imagens e arquivos", timeout=60
             )
             await upload_menu_item.click(
                 x_offset=random.randint(-5, 5),
-                y_offset=random.randint(-3, 3),
-                hold_time=random.uniform(0.08, 0.15),
+                y_offset=random.randint(-5, 5),
+                hold_time=random.uniform(0.02, 0.15),
             )
 
         await asyncio.sleep(random.uniform(1.0, 2.0))
@@ -418,11 +419,13 @@ async def interact_and_send(tab, file_path: Path, message: str):
 
         await chat_input.click(
             x_offset=random.randint(-5, 5),
-            y_offset=random.randint(-3, 3),
-            hold_time=random.uniform(0.08, 0.15),
+            y_offset=random.randint(-5, 5),
+            hold_time=random.uniform(0.02, 0.15),
         )
 
-        await asyncio.sleep(random.uniform(0.3, 0.8))
+        await asyncio.sleep(random.uniform(0.1, 1.0))
+
+        click.echo(f"Digitando prompt ({filename})...")
 
         # Digitar mensagem (recebida como parâmetro)
         await chat_input.type_text(message, humanize=True)
@@ -432,33 +435,34 @@ async def interact_and_send(tab, file_path: Path, message: str):
 
         # Clicar Enviar
         send_button = await tab.find(aria_label="Enviar", timeout=60)
+
         await send_button.click(
             x_offset=random.randint(-5, 5),
-            y_offset=random.randint(-3, 3),
-            hold_time=random.uniform(0.09, 0.18),
+            y_offset=random.randint(-5, 5),
+            hold_time=random.uniform(0.02, 0.15),
         )
 
         # Wait for generation to START (stop button appears)
         # This indicates the AI has started generating a response
-        click.echo(f"Aguardando início da geração para {filename}...")
+        click.echo(f"Aguardando início da geração ({filename})...")
         try:
             await tab.find(aria_label="Interromper geração", timeout=60)
-            click.echo(f"✓ Geração iniciada para {filename}.")
+            click.echo(f"Geração iniciada ({filename})...")
         except Exception:
             # If stop button doesn't appear, fallback to delay
             click.echo(
-                f"⚠️ Botão de parar não encontrado, assumindo geração iniciada para {filename}."
+                f"Botão de parar não encontrado, assumindo geração iniciada ({filename})..."
             )
-            await asyncio.sleep(random.uniform(1.5, 3.0))
+            await asyncio.sleep(random.uniform(0.5, 3.0))
 
         # Small delay to ensure generation is stable
-        await asyncio.sleep(random.uniform(0.5, 1.0))
+        await asyncio.sleep(random.uniform(0.5, 3.0))
 
-        click.echo(f"Solicitação enviada para {filename}.")
+        click.echo(f"Solicitação enviada ({filename})...")
         return True
 
     except Exception as e:
-        click.echo(f"Erro durante interação para {filename}: {e}", err=True)
+        click.echo(f"{e}", err=True)
         # Re-raise to allow retry_with_backoff to handle it
         raise
 
@@ -468,7 +472,7 @@ async def wait_and_save(tab, file_path: Path, output_file: Path):
     Aguarda a resposta em uma aba já ativa e salva no Excel.
     """
     filename = file_path.name
-    click.echo(f"Aguardando resposta para: {filename} em segundo plano...")
+    click.echo(f"Aguardando resposta ({filename}) em segundo plano...")
 
     try:
         # Aguarda botão de copiar (indica fim da geração)
@@ -493,7 +497,7 @@ async def wait_and_save(tab, file_path: Path, output_file: Path):
             response_text = clipboard_result["result"]["result"]["value"]
         except (KeyError, TypeError) as e:
             click.echo(
-                f"Aviso: Estrutura inesperada do clipboard para {filename}: {e}",
+                f"Estrutura inesperada do clipboard ({filename}): {e}",
                 err=True,
             )
             response_text = ""
@@ -509,15 +513,13 @@ async def wait_and_save(tab, file_path: Path, output_file: Path):
             # async with EXCEL_LOCK:
             # Lock removed for COM
             append_to_excel(parsed_data, output_file)
-            click.echo(f"✅ Resultados para {filename} salvos em {output_file}")
+            click.echo(f"Resultados para {filename} salvos em {output_file}")
 
         else:
-            click.echo(
-                f"❌ Nenhum conteúdo obtido na resposta para {filename}", err=True
-            )
+            click.echo(f"Nenhum conteúdo obtido na resposta ({filename})", err=True)
 
     except Exception as e:
-        click.echo(f"Erro aguardando resposta para {filename}: {e}", err=True)
+        click.echo(f"{e}", err=True)
 
 
 def resolve_paths(paths: Tuple[str]) -> List[Path]:
@@ -530,7 +532,7 @@ def resolve_paths(paths: Tuple[str]) -> List[Path]:
     for path_str in paths:
         path = Path(path_str)
         if not path.exists():
-            click.echo(f"Aviso: Caminho não encontrado ignorado: {path}", err=True)
+            click.echo(f"Caminho não encontrado ignorado ({path})", err=True)
             continue
 
         if path.is_file():
@@ -538,11 +540,12 @@ def resolve_paths(paths: Tuple[str]) -> List[Path]:
                 files_to_process.append(path)
             else:
                 click.echo(
-                    f"Aviso: Extensão não suportada ignorada: {path.name}", err=True
+                    f"Extensão de arquivo não suportada ignorada ({path.name})",
+                    err=True,
                 )
 
         elif path.is_dir():
-            click.echo(f"Escaneando diretório: {path}")
+            click.echo(f"Escaneando diretório ({path})...")
             for item in path.rglob("*"):
                 if item.is_file() and item.suffix.lower() in SUPPORTED_EXTENSIONS:
                     files_to_process.append(item)
@@ -568,7 +571,7 @@ async def process_files_logic(
 
     if processed_filenames:
         click.echo(
-            f"📋 Encontrados {len(processed_filenames)} arquivos já processados no Excel."
+            f"Encontrados {len(processed_filenames)} arquivos já processados no Excel."
         )
 
     # Filtra arquivos que ainda precisam ser processados
@@ -576,17 +579,21 @@ async def process_files_logic(
     skipped_count = len(files) - len(pending_files)
 
     if skipped_count > 0:
-        click.echo(f"⏭️  Pulando {skipped_count} arquivos já processados.")
+        click.echo(f"Pulando {skipped_count} arquivos já processados.")
 
     if not pending_files:
-        click.echo("✅ Todos os arquivos já foram processados. Nada a fazer.")
+        click.echo("Todos os arquivos já foram processados. Nada a fazer.")
         return
 
-    click.echo(f"📁 {len(pending_files)} arquivos pendentes para processamento.")
+    click.echo(f"{len(pending_files)} arquivos pendentes para processamento.")
 
     options = ChromiumOptions()
     options.block_notifications = True
     options.block_popups = True
+
+    # Core stealth
+    # options.add_argument("--disable-blink-features=AutomationControlled")
+    options.add_argument("--disable-features=IsolateOrigins,site-per-process")
 
     # WebGL (software renderer to avoid unique GPU signatures)
     options.add_argument("--use-gl=swiftshader")
@@ -595,8 +602,24 @@ async def process_files_logic(
     # WebRTC IP leak prevention
     options.add_argument("--force-webrtc-ip-handling-policy=disable_non_proxied_udp")
 
+    # Permissions and first-run
+    # options.add_argument("--no-first-run") # Already added
+    # options.add_argument("--no-default-browser-check") # Already added
+
+    # Disable unnecessary features
+    options.add_argument("--disable-translate")
+    options.add_argument("--disable-background-timer-throttling")
+    options.add_argument("--disable-backgrounding-occluded-windows")
+    options.add_argument("--disable-renderer-backgrounding")
+
+    # Network optimizations
+    options.add_argument("--disable-features=NetworkPrediction")
+    options.add_argument("--dns-prefetch-disable")
+
     # Headless mode (enabled by default, use --disable-headless to show browser)
     if not disable_headless:
+        options.add_argument("--disable-gpu")
+        options.add_argument("--disable-software-rasterizer")
         options.add_argument("--headless=new")
         options.add_argument("--window-size=1920,1080")
 
@@ -609,7 +632,7 @@ async def process_files_logic(
                 origin="https://m365.cloud.microsoft",
             )
         except Exception as e:
-            click.echo(f"Aviso: Não foi possível conceder permissões: {e}", err=True)
+            click.echo(f"Não foi possível conceder permissões: {e}", err=True)
 
         await load_cookies(first_tab)
 
@@ -672,7 +695,7 @@ async def process_files_logic(
             # Se atingir 10 abas abertas aguardando, fecha as 5 mais antigas.
             if len(waiting_tasks) >= 10:
                 click.echo(
-                    "⚠️ Limite de 10 abas atingido. Fechando as 5 mais antigas para liberar memória..."
+                    "Limite de 10 abas atingido. Fechando as 5 mais antigas para liberar memória..."
                 )
 
                 # Seleciona as 5 tarefas mais antigas (primeiros 5 da lista)
@@ -690,18 +713,19 @@ async def process_files_logic(
                 for old_tab in tabs_to_close:
                     if old_tab != first_tab:
                         await safe_close_tab(old_tab)
-                        # Pequena pausa entre fechamentos para parecer natural
-                        await asyncio.sleep(random.uniform(0.3, 0.7))
+                        await asyncio.sleep(random.uniform(1.0, 2.0))
 
-                click.echo("✅ Limpeza de memória concluída (5 abas fechadas).")
+                click.echo("Limpeza de memória concluída (5 abas fechadas).")
 
         if waiting_tasks:
             click.echo("Todas as solicitações enviadas. Aguardando respostas...")
             tasks_only = [t for t, _ in waiting_tasks]
             await asyncio.gather(*tasks_only, return_exceptions=True)
 
-        # Graceful cleanup: close all tabs before browser exit
+        await save_cookies(browser)
+
         click.echo("Limpando abas...")
+
         all_tabs = [tab for _, tab in waiting_tasks]
         if first_tab not in all_tabs:
             all_tabs.append(first_tab)
@@ -709,10 +733,7 @@ async def process_files_logic(
         for tab in all_tabs:
             await safe_close_tab(tab)
 
-        # Small delay to let browser process pending operations
         await asyncio.sleep(0.5)
-
-        await save_cookies(browser)
 
 
 @click.command()
@@ -781,13 +802,13 @@ def main(prompt, paths, output, start, stop, disable_headless):
             parsed_start = parse_time(start)
             parsed_stop = parse_time(stop)
             click.echo(
-                f"⏰ Agendamento ativo: {parsed_start.strftime('%H:%M')} - {parsed_stop.strftime('%H:%M')}"
+                f"Agendamento ativo: {parsed_start.strftime('%H:%M')} - {parsed_stop.strftime('%H:%M')}"
             )
         except ValueError as e:
-            click.echo(f"Erro: {e}", err=True)
+            click.echo(f"{e}", err=True)
             return
     elif start or stop:
-        click.echo("Erro: --start e --stop devem ser usados juntos", err=True)
+        click.echo("--start e --stop devem ser usados juntos", err=True)
         return
 
     files = resolve_paths(paths)
@@ -801,7 +822,7 @@ def main(prompt, paths, output, start, stop, disable_headless):
     if not output_file.is_absolute():
         output_file = Path(__file__).parent / output_file
 
-    click.echo(f"📊 Arquivo de saída: {output_file}")
+    click.echo(f"Arquivo de saída: {output_file}")
 
     # Executa o loop assíncrono
     asyncio.run(
