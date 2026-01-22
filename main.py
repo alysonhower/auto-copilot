@@ -191,7 +191,9 @@ def extract_tags_from_prompt(prompt_text: str) -> List[str]:
     return tags
 
 
-def parse_copilot_response(text: str, tags: List[str], filename: str = "") -> dict:
+def parse_copilot_response(
+    text: str, tags: List[str], filename: str = "", name_column: str = "Arquivo"
+) -> dict:
     """
     Extrai conteúdo das tags especificadas usando Selectolax.
 
@@ -199,8 +201,9 @@ def parse_copilot_response(text: str, tags: List[str], filename: str = "") -> di
         text: O texto HTML/Markdown da resposta.
         tags: Lista de tags para buscar (em ordem).
         filename: Nome do arquivo processado (para metadados).
+        name_column: Nome da coluna onde o nome do arquivo será salvo.
     """
-    result = {"Correspondência": filename}
+    result = {name_column: filename}
 
     try:
         tree = HTMLParser(text)
@@ -238,7 +241,7 @@ def get_excel_app():
             return None
 
 
-def get_processed_filenames(filepath: Path) -> set:
+def get_processed_filenames(filepath: Path, name_column: str = "Arquivo") -> set:
     """Retorna o conjunto de nomes de arquivos já processados no Excel usando COM."""
     if not filepath.exists():
         return set()
@@ -288,8 +291,8 @@ def get_processed_filenames(filepath: Path) -> set:
             headers.append(val)
             col += 1
 
-        if "Correspondência" in headers:
-            col_idx = headers.index("Correspondência") + 1
+        if name_column in headers:
+            col_idx = headers.index(name_column) + 1
             # Ler coluna (assume dados contíguos ou varre used range)
             # UsedRange é mais seguro
             used_range = ws.UsedRange
@@ -699,7 +702,13 @@ async def interact_and_send(
     raise Exception(f"Falha no upload após 3 tentativas para {filename}")
 
 
-async def wait_and_save(tab, file_path: Path, output_file: Path, tags: List[str]):
+async def wait_and_save(
+    tab,
+    file_path: Path,
+    output_file: Path,
+    tags: List[str],
+    name_column: str = "Arquivo",
+):
     """
     Aguarda a resposta em uma aba já ativa e salva no Excel.
     """
@@ -741,7 +750,10 @@ async def wait_and_save(tab, file_path: Path, output_file: Path, tags: List[str]
         if response_text:
             attachment_name = file_path.stem
             parsed_data = parse_copilot_response(
-                response_text, tags=tags, filename=attachment_name
+                response_text,
+                tags=tags,
+                filename=attachment_name,
+                name_column=name_column,
             )
 
             output_file.parent.mkdir(parents=True, exist_ok=True)
@@ -812,6 +824,7 @@ async def process_files_logic(
     stop_time: Optional[time] = None,
     disable_headless: bool = False,
     risky_mode: bool = False,
+    name_column: str = "Arquivo",
 ):
     """Lógica principal de orquestração do navegador."""
     """Lógica principal de orquestração do navegador."""
@@ -822,7 +835,7 @@ async def process_files_logic(
         return
 
     # Verifica arquivos já processados para retomada
-    processed_filenames = get_processed_filenames(output_file)
+    processed_filenames = get_processed_filenames(output_file, name_column=name_column)
 
     if processed_filenames:
         click.echo(
@@ -888,8 +901,6 @@ async def process_files_logic(
 
     # Headless mode (enabled by default, use --disable-headless to show browser)
     if not disable_headless:
-        options.add_argument("--disable-gpu")
-        options.add_argument("--disable-software-rasterizer")
         options.add_argument("--headless=new")
         options.add_argument("--window-size=1920,1080")
 
@@ -969,7 +980,7 @@ async def process_files_logic(
             if success:
                 # 2. PARTE PARALELA: Aguardar resposta
                 task = asyncio.create_task(
-                    wait_and_save(tab, file_path, output_file, tags)
+                    wait_and_save(tab, file_path, output_file, tags, name_column)
                 )
                 waiting_tasks.append((task, tab))
             else:
@@ -1059,12 +1070,19 @@ async def process_files_logic(
     help="Desabilitar modo headless (mostrar o navegador)",
 )
 @click.option(
+    "--name-column",
+    "-nc",
+    type=str,
+    default="Arquivo",
+    help="Nome da coluna para os nomes dos arquivos (padrão: Arquivo)",
+)
+@click.option(
     "--risky",
     is_flag=True,
     default=False,
     help="Habilita modo arriscado (copiar/colar prompt) para maior velocidade",
 )
-def main(prompt, paths, output, start, stop, disable_headless, risky):
+def main(prompt, paths, output, start, stop, disable_headless, name_column, risky):
     """
     Auto-Copilot CLI.
 
@@ -1106,6 +1124,9 @@ def main(prompt, paths, output, start, stop, disable_headless, risky):
         click.echo(
             click.style("Modo arriscado confirmado. Prosseguindo...", fg="green")
         )
+
+    # Capitalize the column name
+    name_column = name_column.title()
 
     # Load message content (from file or direct string)
     try:
@@ -1165,6 +1186,7 @@ def main(prompt, paths, output, start, stop, disable_headless, risky):
             parsed_stop,
             disable_headless,
             risky,
+            name_column=name_column,
         )
     )
 
