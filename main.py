@@ -546,8 +546,8 @@ async def process_files_logic(
     # WebRTC IP leak prevention
     options.add_argument("--force-webrtc-ip-handling-policy=disable_non_proxied_udp")
 
-    # options.add_argument("--headless=new")
-    # options.add_argument("--window-size=1920,1080")
+    options.add_argument("--headless=new")
+    options.add_argument("--window-size=1920,1080")
 
     async with Chrome(options=options) as browser:
         first_tab = await browser.start()
@@ -674,12 +674,14 @@ async def process_files_logic(
 )
 @click.option(
     "--start",
+    "-strt",
     type=str,
     default=None,
     help="Hora de início do processamento (HH:MM, ex: 07:00)",
 )
 @click.option(
     "--stop",
+    "-stp",
     type=str,
     default=None,
     help="Hora de término do processamento (HH:MM, ex: 20:20)",
