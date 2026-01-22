@@ -80,6 +80,40 @@ async def save_cookies(browser):
         click.echo(f"Erro ao salvar cookies: {e}", err=True)
 
 
+def load_message_content(message_input: str) -> str:
+    """
+    Carrega o conteúdo da mensagem a partir de um arquivo .md ou retorna a string diretamente.
+
+    Args:
+        message_input: Caminho para arquivo .md ou string de mensagem direta
+
+    Returns:
+        String com o conteúdo da mensagem
+    """
+    # Verifica se é um caminho de arquivo
+    message_path = Path(message_input)
+
+    if message_path.exists() and message_path.is_file():
+        if message_path.suffix.lower() == ".md":
+            try:
+                content = message_path.read_text(encoding="utf-8")
+                click.echo(f"📄 Mensagem carregada de: {message_path}")
+                return content.strip()
+            except Exception as e:
+                click.echo(
+                    f"Erro ao ler arquivo de mensagem {message_path}: {e}", err=True
+                )
+                raise
+        else:
+            click.echo(
+                f"Aviso: Arquivo {message_path} não é .md, usando caminho como mensagem literal",
+                err=True,
+            )
+
+    # Se não for arquivo válido, retorna como string literal
+    return message_input
+
+
 def parse_copilot_response(text: str, filename: str = "") -> dict:
     """Extrai conteúdo das tags <data>, <resumo>, e <objeto>."""
     tags = ["data", "resumo", "objeto"]
@@ -299,7 +333,7 @@ async def safe_close_tab(tab, timeout: float = 5.0):
         click.echo(f"Aviso: Não foi possível fechar aba: {e}", err=True)
 
 
-async def interact_and_send(tab, file_path: Path):
+async def interact_and_send(tab, file_path: Path, message: str):
     """
     Realiza a interação até clicar em 'Enviar'.
     Retorna True se bem-sucedido, False caso contrário.
@@ -389,8 +423,7 @@ async def interact_and_send(tab, file_path: Path):
 
         await asyncio.sleep(random.uniform(0.3, 0.8))
 
-        # Digitar mensagem
-        message = r"Analise o documento em anexo e execute as três tarefas a seguir: 1. Identifique a data do documento (se existir), no formato DD/MM/AAAA (dia/mês/ano). Se não existir deixe em branco; 2. Produza um resumo em um único parágrafo, claro e objetivo; 3. Em seguida, identifique e destaque o objeto central do documento em uma única sentença curta, no estilo punchline (poucas palavras, direto ao ponto, refletindo o cerne do conteúdo). IMPORTANTE: Escreva de forma direta, sem usar frases de meta-referência como 'Este documento', 'O documento apresenta', 'O arquivo trata de', etc. Comunique as informações diretamente, como se estivesse relatando os fatos sem mencionar que é um documento. Retorne estritamente neste formato: `<data>[Data do documento ou vazio se não existir]</data><resumo>[Resumo direto, sem meta-referências]</resumo><objeto>[Objeto central, de forma direta]</objeto>"
+        # Digitar mensagem (recebida como parâmetro)
         await chat_input.type_text(message, humanize=True)
 
         # User reviewing message before sending (longer pause)
@@ -506,6 +539,7 @@ def resolve_paths(paths: Tuple[str]) -> List[Path]:
 async def process_files_logic(
     files: List[Path],
     output_file: Path,
+    message: str,
     start_time: Optional[time] = None,
     stop_time: Optional[time] = None,
 ):
@@ -546,7 +580,7 @@ async def process_files_logic(
     # WebRTC IP leak prevention
     options.add_argument("--force-webrtc-ip-handling-policy=disable_non_proxied_udp")
 
-    options.add_argument("--headless=new")
+    # options.add_argument("--headless=new")
     options.add_argument("--window-size=1920,1080")
 
     async with Chrome(options=options) as browser:
@@ -589,6 +623,7 @@ async def process_files_logic(
                         interact_and_send,
                         tab,
                         file_path,
+                        message,
                         max_retries=None,  # Unlimited until success
                         start_time=start_time,
                         stop_time=stop_time,
@@ -596,7 +631,7 @@ async def process_files_logic(
                 else:
                     # After first success: no retry, skip on error
                     # (likely file-specific issue)
-                    await interact_and_send(tab, file_path)
+                    await interact_and_send(tab, file_path, message)
 
                 success = True
                 first_success = True
@@ -664,6 +699,13 @@ async def process_files_logic(
 
 
 @click.command()
+@click.option(
+    "--prompt",
+    "-p",
+    required=True,
+    type=str,
+    help="Mensagem a ser enviada ao Copilot ou caminho para arquivo .md contendo a mensagem",
+)
 @click.argument("paths", nargs=-1, type=click.Path(exists=True))
 @click.option(
     "--output",
@@ -674,7 +716,7 @@ async def process_files_logic(
 )
 @click.option(
     "--start",
-    "-strt",
+    "-st",
     type=str,
     default=None,
     help="Hora de início do processamento (HH:MM, ex: 07:00)",
@@ -686,16 +728,26 @@ async def process_files_logic(
     default=None,
     help="Hora de término do processamento (HH:MM, ex: 20:20)",
 )
-def main(paths, output, start, stop):
+def main(prompt, paths, output, start, stop):
     """
     Auto-Copilot CLI.
 
     Processa arquivos usando o Microsoft 365 Copilot e salva os resultados em Excel.
 
+    Exemplos de uso:
+        auto-copilot -p path/to/prompt.md path/to/dir path/to/file1 path/to/file2
+
     PATHS: Caminhos para arquivos ou diretórios a serem processados.
            Diretórios são escaneados recursivamente por arquivos suportados
            (.xlsx, .xls, .md, .txt, .pdf, .docx, .jpg, .jpeg, .png).
     """
+    # Load message content (from file or direct string)
+    try:
+        message_content = load_message_content(prompt)
+    except Exception as e:
+        click.echo(f"Erro ao carregar mensagem: {e}", err=True)
+        return
+
     # Validate schedule options
     parsed_start = None
     parsed_stop = None
@@ -728,7 +780,11 @@ def main(paths, output, start, stop):
     click.echo(f"📊 Arquivo de saída: {output_file}")
 
     # Executa o loop assíncrono
-    asyncio.run(process_files_logic(files, output_file, parsed_start, parsed_stop))
+    asyncio.run(
+        process_files_logic(
+            files, output_file, message_content, parsed_start, parsed_stop
+        )
+    )
 
 
 if __name__ == "__main__":
