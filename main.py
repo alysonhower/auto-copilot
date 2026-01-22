@@ -14,6 +14,7 @@ from selectolax.parser import HTMLParser
 from pydoll.browser.chromium import Chrome
 from pydoll.browser.options import ChromiumOptions
 from pydoll.constants import Key
+from pydoll.protocol.browser.types import PermissionType
 
 from scheduler import (
     parse_time,
@@ -850,8 +851,8 @@ async def process_files_logic(
     options.add_argument("--force-webrtc-ip-handling-policy=disable_non_proxied_udp")
 
     # Permissions and first-run
-    # options.add_argument("--no-first-run") # Already added
-    # options.add_argument("--no-default-browser-check") # Already added
+    # options.add_argument("--no-first-run") # Already added by Pydoll by default
+    # options.add_argument("--no-default-browser-check") # Already added by Pydoll by default
 
     # Disable unnecessary features
     options.add_argument("--disable-translate")
@@ -873,7 +874,10 @@ async def process_files_logic(
 
         try:
             await browser.grant_permissions(
-                permissions=["clipboardReadWrite", "clipboardSanitizedWrite"],  # type: ignore
+                permissions=[
+                    PermissionType.CLIPBOARD_READ_WRITE,
+                    PermissionType.CLIPBOARD_SANITIZED_WRITE,
+                ],
                 origin="https://m365.cloud.microsoft",
             )
         except Exception as e:
