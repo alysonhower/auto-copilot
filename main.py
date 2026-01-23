@@ -26,7 +26,20 @@ from scheduler import (
 # Arquivo persistente de cookies
 COOKIE_FILE = Path(__file__).parent / ".cookies.json"
 
-# Lock removed - COM handles concurrency
+# Clipboard lock for synchronizing clipboard operations across concurrent tabs
+# This prevents race conditions when multiple tabs try to read/write clipboard
+CLIPBOARD_LOCK: asyncio.Lock | None = None
+
+
+def get_clipboard_lock() -> asyncio.Lock:
+    """
+    Get or create the clipboard lock for the current event loop.
+    Must be called from within an async context.
+    """
+    global CLIPBOARD_LOCK
+    if CLIPBOARD_LOCK is None:
+        CLIPBOARD_LOCK = asyncio.Lock()
+    return CLIPBOARD_LOCK
 
 
 # Extensões suportadas
@@ -488,6 +501,86 @@ async def safe_close_tab(tab, timeout: float = 5.0):
         click.echo(click.style(f"Não foi possível fechar aba: {e}", fg="red"), err=True)
 
 
+async def clipboard_write_and_paste(tab, text: str, filename: str = ""):
+    """
+    Write text to clipboard and paste it, with proper locking to prevent
+    race conditions when multiple tabs are operating concurrently.
+
+    This function acquires the clipboard lock before writing to ensure
+    no other tab can interfere with the clipboard content between
+    write and paste operations.
+
+    Args:
+        tab: The browser tab to operate on
+        text: The text to write to clipboard and paste
+        filename: Optional filename for logging purposes
+    """
+    lock = get_clipboard_lock()
+    async with lock:
+        # Write to clipboard
+        await tab.execute_script(
+            f"navigator.clipboard.writeText({json.dumps(text)})"
+        )
+        # Small delay to ensure clipboard write completes
+        await asyncio.sleep(random.uniform(0.1, 0.3))
+        # Paste (Ctrl + V)
+        await tab.keyboard.hotkey(Key.CONTROL, Key.V)
+        # Small delay to ensure paste completes before releasing lock
+        await asyncio.sleep(random.uniform(0.1, 0.2))
+
+    if filename:
+        click.echo(
+            click.style(f"Prompt colado via clipboard ({filename})", fg="cyan")
+        )
+
+
+async def clipboard_click_copy_and_read(tab, copy_button, filename: str = "") -> str:
+    """
+    Click a copy button and read the clipboard content, with proper locking
+    to prevent race conditions when multiple tabs are operating concurrently.
+
+    This function acquires the clipboard lock before clicking copy to ensure
+    no other tab can interfere with the clipboard content between
+    the copy click and the read operation.
+
+    Args:
+        tab: The browser tab to operate on
+        copy_button: The copy button element to click
+        filename: Optional filename for logging purposes
+
+    Returns:
+        The text content from the clipboard, or empty string on error
+    """
+    lock = get_clipboard_lock()
+    async with lock:
+        # Click the copy button with human-like behavior
+        await copy_button.click(
+            x_offset=random.randint(-5, 5),
+            y_offset=random.randint(-3, 3),
+            hold_time=random.uniform(0.08, 0.15),
+        )
+        # Wait for clipboard to be populated
+        await asyncio.sleep(random.uniform(0.3, 0.5))
+        # Read clipboard
+        clipboard_result = await tab.execute_script(
+            "return navigator.clipboard.readText()", await_promise=True
+        )
+
+    # Parse the result (outside lock since it's just data processing)
+    try:
+        response_text = clipboard_result["result"]["result"]["value"]
+    except (KeyError, TypeError) as e:
+        click.echo(
+            click.style(
+                f"Estrutura inesperada do clipboard ({filename}): {e}", fg="red"
+            ),
+            err=True,
+        )
+        response_text = ""
+
+    return response_text
+
+
 async def interact_and_send(
     browser, tab, file_path: Path, message: str, risky_mode: bool = False
 ):
@@ -607,11 +700,8 @@ async def interact_and_send(
 
             # Digitar mensagem
             if risky_mode:
-                # Modo arriscado: Colar mensagem (Ctrl+V)
-                await tab.execute_script(f"navigator.clipboard.writeText({message})")
-                await asyncio.sleep(0.5)
-                # Cola (Ctrl + V)
-                await tab.keyboard.hotkey(Key.CONTROL, Key.V)
+                # Modo arriscado: Colar mensagem (Ctrl+V) com lock para evitar conflitos
+                await clipboard_write_and_paste(tab, message, filename)
             else:
                 # Modo normal: Digitar humanizado
                 await chat_input.type_text(message, humanize=True)
@@ -693,31 +783,12 @@ async def wait_and_save(
         # Aguarda botão de copiar (indica fim da geração)
         copy_button = await tab.find(data_testid="CopyButtonTestId", timeout=180)
 
+        # Small delay before clicking (human-like behavior)
         await asyncio.sleep(random.uniform(0.5, 1.0))
 
-        await copy_button.click(
-            x_offset=random.randint(-5, 5),
-            y_offset=random.randint(-3, 3),
-            hold_time=random.uniform(0.08, 0.15),
-        )
-
-        await asyncio.sleep(random.uniform(0.3, 0.5))
-
-        # Ler clipboard
-        clipboard_result = await tab.execute_script(
-            "return navigator.clipboard.readText()", await_promise=True
-        )
-
-        try:
-            response_text = clipboard_result["result"]["result"]["value"]
-        except (KeyError, TypeError) as e:
-            click.echo(
-                click.style(
-                    f"Estrutura inesperada do clipboard ({filename}): {e}", fg="red"
-                ),
-                err=True,
-            )
-            response_text = ""
+        # Use locked clipboard operation to prevent race conditions
+        # when multiple tabs try to copy simultaneously
+        response_text = await clipboard_click_copy_and_read(tab, copy_button, filename)
 
         if response_text:
             attachment_name = file_path.stem
