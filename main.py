@@ -608,11 +608,7 @@ async def interact_and_send(
             # Digitar mensagem
             if risky_mode:
                 # Modo arriscado: Colar mensagem (Ctrl+V)
-                # Serializa mensagem para garantir escape seguro no JS
-                json_message = json.dumps(message)
-                await tab.execute_script(
-                    f"navigator.clipboard.writeText({json_message})"
-                )
+                await tab.execute_script(f"navigator.clipboard.writeText({message})")
                 await asyncio.sleep(0.5)
                 # Cola (Ctrl + V)
                 await tab.keyboard.hotkey(Key.CONTROL, Key.V)
