@@ -155,10 +155,6 @@ def extract_tags_from_prompt(prompt_text: str) -> List[str]:
     tags = []
     seen = set()
 
-    # Define tags padrão HTML para ignorar se aparecerem sem intencionalidade clara
-    # (Embora num prompt markdown, qualquer tag <foo> seja relevante)
-    ignored_tags = {"html", "head", "body", "-text", "br", "p", "div", "span"}
-
     try:
         tree = HTMLParser(prompt_text)
 
@@ -168,10 +164,6 @@ def extract_tags_from_prompt(prompt_text: str) -> List[str]:
                 tag_name = node.tag
 
                 if not tag_name or not isinstance(tag_name, str):
-                    continue
-
-                # Filtra tags irrelevantes e nomes estranhos
-                if tag_name in ignored_tags:
                     continue
 
                 if tag_name not in seen:
