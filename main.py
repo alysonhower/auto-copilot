@@ -780,8 +780,27 @@ async def wait_and_save(
     )
 
     try:
-        # Aguarda botão de copiar (indica fim da geração)
-        copy_button = await tab.find(data_testid="CopyButtonTestId", timeout=180)
+        # Aguarda fim da geração antes de copiar para evitar pegar o botão do prompt
+        stop_button = await tab.find(
+            aria_label="Interromper geração", timeout=2, raise_exc=False
+        )
+        while stop_button:
+            await asyncio.sleep(random.uniform(0.4, 1.0))
+            stop_button = await tab.find(
+                aria_label="Interromper geração", timeout=2, raise_exc=False
+            )
+
+        # Buscar todos os botões de copiar e usar o mais recente (última resposta)
+        copy_buttons = await tab.find(
+            data_testid="CopyButtonTestId",
+            timeout=180,
+            find_all=True,
+            raise_exc=False,
+        )
+        if copy_buttons:
+            copy_button = copy_buttons[-1]
+        else:
+            copy_button = await tab.find(data_testid="CopyButtonTestId", timeout=30)
 
         # Small delay before clicking (human-like behavior)
         await asyncio.sleep(random.uniform(0.5, 1.0))
