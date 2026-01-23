@@ -22,6 +22,7 @@ from scheduler import (
     wait_until_schedule_starts,
     retry_with_backoff,
 )
+from clipboard_utils import safe_set_clipboard, safe_get_clipboard
 
 COOKIE_FILE = Path(__file__).parent / ".cookies.json"
 
@@ -616,7 +617,7 @@ async def interact_and_send(
 
             # Digitar mensagem
             if risky_mode:
-                await tab.execute_script(f"navigator.clipboard.writeText({message})")
+                safe_set_clipboard(message)
                 await tab.keyboard.hotkey(Key.CONTROL, Key.V)
             else:
                 await chat_input.type_text(message, humanize=True)
@@ -694,20 +695,7 @@ async def wait_and_save(
             hold_time=random.uniform(0.08, 0.15),
         )
 
-        clipboard_result = await tab.execute_script(
-            "return navigator.clipboard.readText()", await_promise=True
-        )
-
-        try:
-            response_text = clipboard_result["result"]["result"]["value"]
-        except (KeyError, TypeError) as e:
-            click.echo(
-                click.style(
-                    f"Estrutura inesperada do clipboard ({filename}): {e}", fg="red"
-                ),
-                err=True,
-            )
-            response_text = ""
+        response_text = safe_get_clipboard()
 
         if response_text:
             attachment_name = file_path.stem
