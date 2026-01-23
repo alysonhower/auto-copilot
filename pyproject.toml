@@ -9,6 +9,7 @@ dependencies = [
     "click>=8.3.1",
     "pywin32>=311",
     "selectolax>=0.4.6",
+    "xlwings>=0.33.20",
 ]
 
 [dependency-groups]

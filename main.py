@@ -9,8 +9,7 @@ from pathlib import Path
 from typing import List, Optional, Tuple
 
 import click
-import win32com.client
-import pythoncom
+import xlwings as xw
 from selectolax.parser import HTMLParser
 
 from pydoll.browser.chromium import Chrome
@@ -227,93 +226,88 @@ def parse_copilot_response(
     return result
 
 
-def get_excel_app():
-    """Obtém ou cria uma instância do Excel."""
+def get_or_open_workbook(filepath: Path) -> tuple:
+    """
+    Opens or gets a workbook using xlwings.
+    Returns (workbook, opened_by_us) tuple.
+    xlwings handles files that are already open by the user.
+    If not open, uses a hidden Excel instance.
+    """
+    abs_path = str(filepath.resolve())
+
+    # Check if workbook is already open by user (only if Excel is running)
     try:
-        return win32com.client.GetActiveObject("Excel.Application")
+        for book in xw.books:
+            if book.fullname.lower() == abs_path.lower():
+                return book, False
     except Exception:
-        try:
-            return win32com.client.Dispatch("Excel.Application")
-        except Exception as e:
-            click.echo(
-                click.style(f"Erro ao inicializar Excel: {e}", fg="red"), err=True
-            )
-            return None
+        # No active Excel app, will open/create below
+        pass
+
+    # Not open by user, so open in a hidden Excel instance
+    if filepath.exists():
+        # Open in hidden app
+        app = xw.App(visible=False)
+        wb = app.books.open(abs_path)
+        return wb, True
+    else:
+        # Create new workbook in hidden app and save
+        app = xw.App(visible=False)
+        wb = app.books.add()
+        wb.save(abs_path)
+        return wb, True
 
 
 def get_processed_filenames(filepath: Path, name_column: str = "Arquivo") -> set:
-    """Retorna o conjunto de nomes de arquivos já processados no Excel usando COM."""
+    """Retorna o conjunto de nomes de arquivos já processados no Excel usando xlwings."""
     if not filepath.exists():
         return set()
 
-    pythoncom.CoInitialize()
-    app = get_excel_app()
-    if not app:
-        return set()
-
+    processed = set()
     wb = None
     opened_by_us = False
-    abs_path = str(filepath.resolve())
-    processed = set()
 
     try:
-        # Tenta encontrar workbook já aberto
-        try:
-            # Workbooks collection é 1-indexed? Em python itera objects.
-            # Acesso direto pode falhar se busy.
-            for w in app.Workbooks:
-                if w.FullName.lower() == abs_path.lower():
-                    wb = w
-                    break
-        except Exception:
-            pass  # Pode falhar se Excel estiver ocupado
+        wb, opened_by_us = get_or_open_workbook(filepath)
+        ws = wb.sheets[0]
 
-        if not wb:
-            try:
-                wb = app.Workbooks.Open(abs_path)
-                opened_by_us = True
-            except Exception as e:
-                click.echo(
-                    click.style(f"Erro ao abrir arquivo {filepath}: {e}", fg="red"),
-                    err=True,
-                )
-                return set()
+        # Read all used data
+        used_range = ws.used_range
+        if used_range.value is None:
+            return set()
 
-        ws = wb.Worksheets(1)
+        data = used_range.value
 
-        # Ler headers
-        headers = []
-        col = 1
-        while True:
-            val = ws.Cells(1, col).Value
-            if not val:
-                break
-            headers.append(val)
-            col += 1
+        # Handle single row case (returns list instead of list of lists)
+        if data and not isinstance(data[0], list):
+            data = [data]
+
+        if not data or len(data) < 1:
+            return set()
+
+        # Get headers from first row
+        headers = data[0] if data else []
 
         if name_column in headers:
-            col_idx = headers.index(name_column) + 1
-            # Ler coluna (assume dados contíguos ou varre used range)
-            # UsedRange é mais seguro
-            used_range = ws.UsedRange
-            # Convert values to list of lists
-            data = used_range.Value
-            if data and isinstance(data, tuple):
-                # data é tuple de tuples
-                # Row 1 é header.
-                for i, row in enumerate(data):
-                    if i == 0:
-                        continue  # Skip header
-                    if len(row) >= col_idx:
-                        val = row[col_idx - 1]
-                        if val:
-                            processed.add(str(val))
+            col_idx = headers.index(name_column)
+            for i, row in enumerate(data):
+                if i == 0:
+                    continue  # Skip header
+                if row and len(row) > col_idx:
+                    val = row[col_idx]
+                    if val:
+                        processed.add(str(val))
+
     except Exception as e:
-        click.echo(click.style(f"Erro ao ler Excel via COM: {e}", fg="red"), err=True)
+        click.echo(
+            click.style(f"Erro ao ler Excel via xlwings: {e}", fg="red"), err=True
+        )
     finally:
         if opened_by_us and wb:
             try:
-                wb.Close(SaveChanges=False)
+                app = wb.app
+                wb.close()
+                app.quit()
             except Exception:
                 pass
 
@@ -322,126 +316,100 @@ def get_processed_filenames(filepath: Path, name_column: str = "Arquivo") -> set
 
 def format_excel_table(ws):
     """
-    Formata a planilha como uma Tabela Oficial do Excel e aplica estilos.
+    Formata a planilha como uma Tabela Oficial do Excel e aplica estilos usando xlwings.
     """
     try:
-        # Constantes Excel
-        xlSrcRange = 1
-        xlYes = 1
-        xlCenter = -4108
-        xlVAlignCenter = -4108
-        xlContinuous = 1
-        xlThin = 2
+        used_range = ws.used_range
 
-        used_range = ws.UsedRange
+        # Check if sheet is empty
+        if used_range.value is None:
+            return
 
-        # Ignora se planilha vazia
-        if used_range.Count == 1 and not used_range.Value:
-            try:
-                # Tenta verificar se a unica celula tem valor (Count 1 as vezes engana)
-                if not ws.Cells(1, 1).Value:
-                    return
-            except Exception:
-                return
+        # Single cell check
+        if used_range.count == 1 and not ws.range("A1").value:
+            return
 
-        # 1. Cria ou Atualiza Tabela (ListObject)
+        # Get the underlying Excel API for table operations
+        api = ws.api
+
+        # 1. Create or Update Table (ListObject)
         tbl = None
-        if ws.ListObjects.Count == 0:
+        if api.ListObjects.Count == 0:
             try:
-                tbl = ws.ListObjects.Add(xlSrcRange, used_range, None, xlYes)
+                # xlSrcRange = 1, xlYes = 1
+                tbl = api.ListObjects.Add(1, used_range.api, None, 1)
                 tbl.Name = "CopilotData"
                 tbl.ShowAutoFilter = True
             except Exception as e:
                 click.echo(f"Aviso ao criar tabela: {e}", err=True)
         else:
             try:
-                tbl = ws.ListObjects(1)
-                tbl.Resize(used_range)
+                tbl = api.ListObjects(1)
+                tbl.Resize(used_range.api)
             except Exception:
                 pass
 
-        # Aplica estilo neutro
+        # Apply table style
         if tbl:
             try:
                 tbl.TableStyle = "TableStyleLight9"
             except Exception:
                 pass
 
-        # 2. Formatação de Fonte e Alinhamento
-        # Aplica em TODO o UsedRange (Headers + Data)
-        used_range.Font.Name = "Calibri"
-        used_range.Font.Size = 11
-        used_range.HorizontalAlignment = xlCenter
-        used_range.VerticalAlignment = xlVAlignCenter
-        used_range.WrapText = True
+        # 2. Font and Alignment Formatting via API
+        # xlCenter = -4108, xlVAlignCenter = -4108
+        used_range.api.Font.Name = "Calibri"
+        used_range.api.Font.Size = 11
+        used_range.api.HorizontalAlignment = -4108
+        used_range.api.VerticalAlignment = -4108
+        used_range.api.WrapText = True
 
-        # 3. Bordas (All Borders)
+        # 3. Borders (all borders)
         try:
-            used_range.Borders.LineStyle = xlContinuous
-            used_range.Borders.Weight = xlThin
+            # xlContinuous = 1, xlThin = 2
+            used_range.api.Borders.LineStyle = 1
+            used_range.api.Borders.Weight = 2
         except Exception:
             pass
 
-        # 4. AutoFit Colunas
-        # AutoFit as vezes deixa colunas muito largas para textos longos (ex: corpo do email)
-        # Mas é o pedido: "proper headers... formatting etc"
-        used_range.Columns.AutoFit()
+        # 4. AutoFit Columns
+        used_range.columns.autofit()
 
     except Exception as e:
         click.echo(f"Erro não crítico ao formatar tabela: {e}", err=True)
 
 
 def append_to_excel(data: dict, filepath: Path):
-    """Adiciona dados ao Excel usando COM com repetição em caso de bloqueio."""
-    pythoncom.CoInitialize()
-    abs_path = str(filepath.resolve())
+    """
+    Adiciona dados ao Excel usando xlwings.
+    xlwings handles files open by user seamlessly.
+    """
 
     max_retries = 20
     for attempt in range(max_retries):
+        wb = None
+        opened_by_us = False
+
         try:
-            app = get_excel_app()
-            if not app:
-                return
+            wb, opened_by_us = get_or_open_workbook(filepath)
+            ws = wb.sheets[0]
 
-            wb = None
-            opened_by_us = False
+            # Find next row using xlwings
+            used_range = ws.used_range
 
-            # Check open workbooks
-            try:
-                for w in app.Workbooks:
-                    if w.FullName.lower() == abs_path.lower():
-                        wb = w
-                        break
-            except Exception:
-                pass
-
-            if not wb:
-                if filepath.exists():
-                    wb = app.Workbooks.Open(abs_path)
-                    opened_by_us = True
-                else:
-                    wb = app.Workbooks.Add()
-                    wb.SaveAs(abs_path)
-                    opened_by_us = True
-
-            ws = wb.Worksheets(1)
-
-            # Find next row
-            # xlUp = -4162
-            last_row_cell = ws.Cells(ws.Rows.Count, 1).End(-4162)
-            last_row = last_row_cell.Row
-
-            # Check empty sheet
-            if last_row == 1 and not ws.Cells(1, 1).Value:
+            # Check if sheet is empty
+            if used_range.value is None or (
+                used_range.count == 1 and ws.range("A1").value is None
+            ):
                 next_row = 1
             else:
-                next_row = last_row + 1
+                next_row = used_range.last_cell.row + 1
 
-            # Map headers
+            # Get existing headers
             sheet_headers = []
             col = 1
             while True:
-                val = ws.Cells(1, col).Value
+                val = ws.range((1, col)).value
                 if not val:
                     break
                 sheet_headers.append(str(val))
@@ -451,7 +419,7 @@ def append_to_excel(data: dict, filepath: Path):
                 # Initialize new sheet headers
                 headers = list(data.keys())
                 for i, h in enumerate(headers, 1):
-                    ws.Cells(1, i).Value = h
+                    ws.range((1, i)).value = h
                 sheet_headers = headers
                 next_row = 2
 
@@ -459,25 +427,29 @@ def append_to_excel(data: dict, filepath: Path):
             for key, value in data.items():
                 if key in sheet_headers:
                     col_idx = sheet_headers.index(key) + 1
-                    ws.Cells(next_row, col_idx).Value = value
-                else:
-                    # New column? Append logic could go here but skipping for simplicity
-                    pass
+                    ws.range((next_row, col_idx)).value = value
 
-            # Aplica formatação de tabela
+            # Apply table formatting
             format_excel_table(ws)
 
-            # Save logic: Only save/close if we opened it.
-            # If user has it open, changes appear live.
+            # Save: xlwings auto-syncs with open workbooks
+            # Only save/close if we opened it
             if opened_by_us:
-                wb.Save()
-                wb.Close()
+                try:
+                    wb.save()
+                    wb.close()
+                    wb.quit()
+                except Exception:
+                    pass
+            else:
+                # For user-opened workbooks, just save in place
+                wb.save()
 
             return  # Success
 
         except Exception as e:
-            # Handle CallRejected (user typing)
             err_str = str(e)
+            # Handle potential COM busy errors (xlwings still uses COM underneath)
             if "Call was rejected by callee" in err_str or "-2147418111" in err_str:
                 click.echo(
                     f"Excel ocupado (usuário editando?), tentativa {attempt + 1}/{max_retries}...",
@@ -489,7 +461,9 @@ def append_to_excel(data: dict, filepath: Path):
                 click.echo(f"Erro fatal ao escrever no Excel: {e}", err=True)
                 if opened_by_us and wb:
                     try:
-                        wb.Close(SaveChanges=False)
+                        app = wb.app
+                        wb.close()
+                        app.quit()
                     except Exception:
                         pass
                 raise e

@@ -84,6 +84,19 @@ wheels = [
 ]
 
 [[package]]
+name = "appscript"
+version = "1.4.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "lxml" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/ca/52/2fa70edfd98f0058219ecc2e365a3ba7aabd42db14ff9d7f44bbdcc5400d/appscript-1.4.0.tar.gz", hash = "sha256:b2c6fc770bf822ea45529c7084bc0ee340e67ab260016b01d28e0449ec8723be", size = 295279, upload-time = "2025-10-08T07:56:39.126Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/4d/15/748adf302d8f1f8f975bb26c1b918d84f1d39bb6c4730e0b91f551297984/appscript-1.4.0-cp314-cp314-macosx_10_13_universal2.whl", hash = "sha256:1a5747425d2a5732e2854cab0d0dc893ef077cabd7d57f7ec4caea2ac313e19f", size = 99700, upload-time = "2025-10-08T07:56:37.313Z" },
+    { url = "https://files.pythonhosted.org/packages/dd/e3/03dc0f97eab839f72061342d69bd34424e89876ce4026509aab3d74d4f23/appscript-1.4.0-cp314-cp314-macosx_10_13_x86_64.whl", hash = "sha256:5efce3302c00674b769b79938cc5f66f7791ef45c6419e850a5f1c8f9fcefcc1", size = 85610, upload-time = "2025-10-08T07:56:38.103Z" },
+]
+
+[[package]]
 name = "attrs"
 version = "25.4.0"
 source = { registry = "https://pypi.org/simple" }
@@ -101,6 +114,7 @@ dependencies = [
     { name = "pydoll-python" },
     { name = "pywin32" },
     { name = "selectolax" },
+    { name = "xlwings" },
 ]
 
 [package.dev-dependencies]
@@ -114,6 +128,7 @@ requires-dist = [
     { name = "pydoll-python", specifier = ">=2.15.1" },
     { name = "pywin32", specifier = ">=311" },
     { name = "selectolax", specifier = ">=0.4.6" },
+    { name = "xlwings", specifier = ">=0.33.20" },
 ]
 
 [package.metadata.requires-dev]
@@ -197,6 +212,18 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/72/34/14ca021ce8e5dfedc35312d08ba8bf51fdd999c576889fc2c24cb97f4f10/iniconfig-2.3.0.tar.gz", hash = "sha256:c76315c77db068650d49c5b56314774a7804df16fee4402c1f19d6d15d8c4730", size = 20503, upload-time = "2025-10-18T21:55:43.219Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/cb/b1/3846dd7f199d53cb17f49cba7e651e9ce294d8497c8c150530ed11865bb8/iniconfig-2.3.0-py3-none-any.whl", hash = "sha256:f631c04d2c48c52b84d0d0549c99ff3859c98df65b3101406327ecc7d53fbf12", size = 7484, upload-time = "2025-10-18T21:55:41.639Z" },
+]
+
+[[package]]
+name = "lxml"
+version = "6.0.2"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/aa/88/262177de60548e5a2bfc46ad28232c9e9cbde697bd94132aeb80364675cb/lxml-6.0.2.tar.gz", hash = "sha256:cd79f3367bd74b317dda655dc8fcfa304d9eb6e4fb06b7168c5cf27f96e0cd62", size = 4073426, upload-time = "2025-09-22T04:04:59.287Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/03/15/d4a377b385ab693ce97b472fe0c77c2b16ec79590e688b3ccc71fba19884/lxml-6.0.2-cp314-cp314-macosx_10_13_universal2.whl", hash = "sha256:b0c732aa23de8f8aec23f4b580d1e52905ef468afb4abeafd3fec77042abb6fe", size = 8659801, upload-time = "2025-09-22T04:02:30.113Z" },
+    { url = "https://files.pythonhosted.org/packages/c8/e8/c128e37589463668794d503afaeb003987373c5f94d667124ffd8078bbd9/lxml-6.0.2-cp314-cp314-macosx_10_13_x86_64.whl", hash = "sha256:4468e3b83e10e0317a89a33d28f7aeba1caa4d1a6fd457d115dd4ffe90c5931d", size = 4659403, upload-time = "2025-09-22T04:02:32.119Z" },
+    { url = "https://files.pythonhosted.org/packages/5e/5c/42c2c4c03554580708fc738d13414801f340c04c3eff90d8d2d227145275/lxml-6.0.2-cp314-cp314t-macosx_10_13_universal2.whl", hash = "sha256:6162a86d86893d63084faaf4ff937b3daea233e3682fb4474db07395794fa80d", size = 8910380, upload-time = "2025-09-22T04:03:01.645Z" },
+    { url = "https://files.pythonhosted.org/packages/bf/4f/12df843e3e10d18d468a7557058f8d3733e8b6e12401f30b1ef29360740f/lxml-6.0.2-cp314-cp314t-macosx_10_13_x86_64.whl", hash = "sha256:414aaa94e974e23a3e92e7ca5b97d10c0cf37b6481f50911032c69eeb3991bba", size = 4775632, upload-time = "2025-09-22T04:03:03.814Z" },
 ]
 
 [[package]]
@@ -302,6 +329,18 @@ wheels = [
 ]
 
 [[package]]
+name = "psutil"
+version = "7.2.1"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/73/cb/09e5184fb5fc0358d110fc3ca7f6b1d033800734d34cac10f4136cfac10e/psutil-7.2.1.tar.gz", hash = "sha256:f7583aec590485b43ca601dd9cea0dcd65bd7bb21d30ef4ddbf4ea6b5ed1bdd3", size = 490253, upload-time = "2025-12-29T08:26:00.169Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/05/c2/5fb764bd61e40e1fe756a44bd4c21827228394c17414ade348e28f83cd79/psutil-7.2.1-cp314-cp314t-macosx_10_15_x86_64.whl", hash = "sha256:494c513ccc53225ae23eec7fe6e1482f1b8a44674241b54561f755a898650679", size = 129716, upload-time = "2025-12-29T08:26:16.017Z" },
+    { url = "https://files.pythonhosted.org/packages/c9/d2/935039c20e06f615d9ca6ca0ab756cf8408a19d298ffaa08666bc18dc805/psutil-7.2.1-cp314-cp314t-macosx_11_0_arm64.whl", hash = "sha256:3fce5f92c22b00cdefd1645aa58ab4877a01679e901555067b1bd77039aa589f", size = 130133, upload-time = "2025-12-29T08:26:18.009Z" },
+    { url = "https://files.pythonhosted.org/packages/c5/cf/5180eb8c8bdf6a503c6919f1da28328bd1e6b3b1b5b9d5b01ae64f019616/psutil-7.2.1-cp36-abi3-macosx_10_9_x86_64.whl", hash = "sha256:b2e953fcfaedcfbc952b44744f22d16575d3aa78eb4f51ae74165b4e96e55f42", size = 128137, upload-time = "2025-12-29T08:26:27.759Z" },
+    { url = "https://files.pythonhosted.org/packages/c5/2c/78e4a789306a92ade5000da4f5de3255202c534acdadc3aac7b5458fadef/psutil-7.2.1-cp36-abi3-macosx_11_0_arm64.whl", hash = "sha256:05cc68dbb8c174828624062e73078e7e35406f4ca2d0866c272c2410d8ef06d1", size = 128947, upload-time = "2025-12-29T08:26:29.548Z" },
+]
+
+[[package]]
 name = "pydoll-python"
 version = "2.15.1"
 source = { registry = "https://pypi.org/simple" }
@@ -393,6 +432,28 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/94/54/8359678c726243d19fae38ca14a334e740782336c9f19700858c4eb64a1e/websockets-14.2.tar.gz", hash = "sha256:5059ed9c54945efb321f097084b4c7e52c246f2c869815876a69d1efc4ad6eb5", size = 164394, upload-time = "2025-01-19T21:00:56.431Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/7b/c8/d529f8a32ce40d98309f4470780631e971a5a842b60aec864833b3615786/websockets-14.2-py3-none-any.whl", hash = "sha256:7a6ceec4ea84469f15cf15807a747e9efe57e369c384fa86e022b3bea679b79b", size = 157416, upload-time = "2025-01-19T21:00:54.843Z" },
+]
+
+[[package]]
+name = "xlwings"
+version = "0.33.20"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "appscript", marker = "sys_platform == 'darwin'" },
+    { name = "psutil", marker = "sys_platform == 'darwin'" },
+    { name = "pywin32", marker = "sys_platform == 'win32'" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/9d/bb/c63719509af8dff2ec20a809e87bef90f35661488d6484dac306d1d7b560/xlwings-0.33.20.tar.gz", hash = "sha256:52c85b693745cd0cc9fd847609dae976cb12ea1e9fa2065b91cf52ce2d7a559d", size = 15761897, upload-time = "2026-01-21T14:41:03.709Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/3e/da/c4f9ccecedef9e98642a588ac7903d9143942717dfbee0e3da2b3dee7a98/xlwings-0.33.20-cp314-cp314-macosx_10_12_x86_64.whl", hash = "sha256:527e820ce6c37068c53212d611b3f6fa56a9f71dfd535e16f64fd860a3615080", size = 1385244, upload-time = "2026-01-21T14:41:45.319Z" },
+    { url = "https://files.pythonhosted.org/packages/81/68/c4a14e9148ef42f9383b8c6aead50d1d428200ec4b5f1eb0d0306997fc29/xlwings-0.33.20-cp314-cp314-macosx_11_0_arm64.whl", hash = "sha256:af88d064bfe81d767d32312d7b81afb2e6b3565fee624c0a5e2a3454383a7d9e", size = 1365918, upload-time = "2026-01-21T14:41:46.361Z" },
+    { url = "https://files.pythonhosted.org/packages/a4/e7/779aec907b0a919a71a2e59fa9b7e89e7c74694a9e359f0136b1a122b53e/xlwings-0.33.20-cp314-cp314-manylinux_2_17_aarch64.manylinux2014_aarch64.whl", hash = "sha256:cdb1bb6b5478af103c6fb6471370e7e0a5d70a00f672b313ba68a609f0faff27", size = 1429005, upload-time = "2026-01-21T14:41:47.483Z" },
+    { url = "https://files.pythonhosted.org/packages/02/4c/6b8d42e085c907d344e9091e0cbb891a775de190a0db288d8ca367d03332/xlwings-0.33.20-cp314-cp314-manylinux_2_17_armv7l.manylinux2014_armv7l.whl", hash = "sha256:79f9377798c537c437e04f158f635b078becfe881bba2a538e59d01448342f9b", size = 1431915, upload-time = "2026-01-21T14:41:48.881Z" },
+    { url = "https://files.pythonhosted.org/packages/b0/c2/ae98cf66427862dfe52e56668e51f872e5e7baee8ec0d8222fd747f6726f/xlwings-0.33.20-cp314-cp314-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:ca22286d62b3db3a4cb6a8626a024b680869bc84896a47c997c60069c51e49ef", size = 1439084, upload-time = "2026-01-21T14:41:49.988Z" },
+    { url = "https://files.pythonhosted.org/packages/ac/1f/1a8d6cfc33da413fa2bec104ceed01d88c5d33edd71ca32fc726604e22ca/xlwings-0.33.20-cp314-cp314-musllinux_1_1_aarch64.whl", hash = "sha256:15f7821bb364f86cb3db2dec34a64b6e12b3ddf1ea3323b4baadc6122b0ec978", size = 1610152, upload-time = "2026-01-21T14:41:51.371Z" },
+    { url = "https://files.pythonhosted.org/packages/99/56/2bb4d8972e3e1fbc9361f29595a22afc163627fbdfba56450c523a74ea86/xlwings-0.33.20-cp314-cp314-musllinux_1_1_x86_64.whl", hash = "sha256:1db4bd88277fd5a4b5a1effc1fa8649a2cb7dc633f4eba03d800ae60896c53df", size = 1642859, upload-time = "2026-01-21T14:41:52.45Z" },
+    { url = "https://files.pythonhosted.org/packages/ab/5b/ac61220baea87a00e1a5471eab5280726bb048e92817557d714fa6627f2e/xlwings-0.33.20-cp314-cp314-win_amd64.whl", hash = "sha256:4c5443b92a3aa9c2bd6cc1b93f48a7036d50b1f673475f758bcd0ab52e83db0d", size = 1625767, upload-time = "2026-01-21T14:41:53.619Z" },
+    { url = "https://files.pythonhosted.org/packages/8e/e3/7253471b65023376819415729d5bfa85d2dc572e60ef1beeb927fe7326df/xlwings-0.33.20-py3-none-any.whl", hash = "sha256:47be279873519ee7d501a2daadca87b3a80c72b57bf6fca55b5891d4bb293957", size = 710681, upload-time = "2026-01-21T14:41:54.706Z" },
 ]
 
 [[package]]
