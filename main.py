@@ -291,7 +291,14 @@ def get_or_open_workbook(filepath: Path):
 
 def get_processed_filenames(filepath: Path, name_column: str = "Arquivo") -> set:
     """Retorna o conjunto de nomes de arquivos já processados no Excel usando xlwings."""
+    click.echo(
+        click.style(f"Checking for existing processed files in: {filepath}", fg="cyan")
+    )
+
     if not filepath.exists():
+        click.echo(
+            click.style(f"Output file does not exist yet: {filepath}", fg="yellow")
+        )
         return set()
 
     processed = set()
@@ -306,33 +313,78 @@ def get_processed_filenames(filepath: Path, name_column: str = "Arquivo") -> set
         # Read all used data
         used_range = ws.used_range
         if used_range.value is None:
-            return set()
+            click.echo(
+                click.style("Excel file exists but is empty (no data)", fg="yellow")
+            )
+            return processed  # Return empty set, cleanup will happen in finally
 
         data = used_range.value
+        click.echo(
+            click.style(
+                f"Read {len(data) if isinstance(data, list) else 1} row(s) from Excel",
+                fg="cyan",
+            )
+        )
 
         # Handle single row case (returns list instead of list of lists)
         if data and not isinstance(data[0], list):
             data = [data]
 
         if not data or len(data) < 1:
-            return set()
+            click.echo(click.style("Excel file has no data rows", fg="yellow"))
+            return processed  # Return empty set, cleanup will happen in finally
 
         # Get headers from first row
         headers = data[0] if data else []
+        click.echo(click.style(f"Found headers: {headers}", fg="cyan"))
 
         if name_column in headers:
             col_idx = headers.index(name_column)
+            click.echo(
+                click.style(
+                    f"Looking for column '{name_column}' at index {col_idx}", fg="cyan"
+                )
+            )
             for i, row in enumerate(data):
                 if i == 0:
                     continue  # Skip header
                 if row and len(row) > col_idx:
                     val = row[col_idx]
                     if val:
-                        processed.add(str(val))
+                        # Normalize: Excel may store numbers as floats (e.g., 5668.0)
+                        # Convert to string and strip .0 suffix and whitespace
+                        val_str = str(val).strip()
+                        if val_str.endswith(".0"):
+                            val_str = val_str[:-2]  # Remove .0 suffix
+                        processed.add(val_str)
+                        click.echo(
+                            click.style(
+                                f"  Found processed file: {val_str} (raw: {val})",
+                                fg="green",
+                            )
+                        )
+            click.echo(
+                click.style(
+                    f"Total processed files found: {len(processed)}", fg="green"
+                )
+            )
+        else:
+            click.echo(
+                click.style(
+                    f"Warning: Column '{name_column}' not found in headers: {headers}",
+                    fg="yellow",
+                ),
+                err=True,
+            )
 
     except Exception as e:
         click.echo(
             click.style(f"Erro ao ler Excel via xlwings: {e}", fg="red"), err=True
+        )
+        import traceback
+
+        click.echo(
+            click.style(f"Traceback: {traceback.format_exc()}", fg="red"), err=True
         )
     finally:
         # CRITICAL: Always clean up resources if we opened them
@@ -341,7 +393,9 @@ def get_processed_filenames(filepath: Path, name_column: str = "Arquivo") -> set
                 if wb:
                     wb.close()
                     click.echo(
-                        click.style(f"Closed workbook: {filepath.name}", fg="cyan")
+                        click.style(
+                            f"Closed workbook after reading: {filepath.name}", fg="cyan"
+                        )
                     )
             except Exception as e:
                 click.echo(
@@ -352,7 +406,9 @@ def get_processed_filenames(filepath: Path, name_column: str = "Arquivo") -> set
             try:
                 if app:
                     app.quit()
-                    click.echo(click.style("Quit Excel application", fg="cyan"))
+                    click.echo(
+                        click.style("Quit Excel application after reading", fg="cyan")
+                    )
             except Exception as e:
                 click.echo(
                     click.style(f"Warning: Error quitting Excel app: {e}", fg="yellow"),
@@ -433,6 +489,12 @@ def append_to_excel(data: dict, filepath: Path):
     xlwings handles files open by user seamlessly.
     Uses proper resource cleanup to prevent zombie Excel processes.
     """
+    click.echo(click.style("\n=== APPEND_TO_EXCEL START ===", fg="magenta"))
+    click.echo(click.style(f"File: {filepath}", fg="magenta"))
+    click.echo(click.style(f"Data keys: {list(data.keys())}", fg="magenta"))
+    click.echo(
+        click.style(f"File exists before write: {filepath.exists()}", fg="magenta")
+    )
 
     max_retries = 20
     for attempt in range(max_retries):
@@ -452,8 +514,15 @@ def append_to_excel(data: dict, filepath: Path):
                 used_range.count == 1 and ws.range("A1").value is None
             ):
                 next_row = 1
+                click.echo(click.style("Sheet is empty, starting at row 1", fg="cyan"))
             else:
                 next_row = used_range.last_cell.row + 1
+                click.echo(
+                    click.style(
+                        f"Next row: {next_row} (last cell was row {used_range.last_cell.row})",
+                        fg="cyan",
+                    )
+                )
 
             # Get existing headers
             sheet_headers = []
@@ -465,28 +534,46 @@ def append_to_excel(data: dict, filepath: Path):
                 sheet_headers.append(str(val))
                 col += 1
 
+            click.echo(click.style(f"Current headers: {sheet_headers}", fg="cyan"))
+
             if not sheet_headers:
                 # Initialize new sheet headers
                 headers = list(data.keys())
+                click.echo(
+                    click.style(
+                        f"Initializing new sheet with headers: {headers}", fg="green"
+                    )
+                )
                 for i, h in enumerate(headers, 1):
                     ws.range((1, i)).value = h
                 sheet_headers = headers
                 next_row = 2
 
             # Write data matching headers
+            click.echo(click.style(f"Writing data to row {next_row}:", fg="cyan"))
             for key, value in data.items():
                 if key in sheet_headers:
                     col_idx = sheet_headers.index(key) + 1
                     ws.range((next_row, col_idx)).value = value
+                    click.echo(click.style(f"  [{key}] = {value}", fg="cyan"))
+                else:
+                    click.echo(
+                        click.style(
+                            f"  WARNING: Key '{key}' not in headers, skipping",
+                            fg="yellow",
+                        )
+                    )
 
             # Apply table formatting
             format_excel_table(ws)
+            click.echo(click.style("Table formatting applied", fg="cyan"))
 
             # Save: xlwings auto-syncs with open workbooks
             # Only save/close if we opened it
             if opened_by_us:
                 try:
                     wb.save()
+                    click.echo(click.style("Workbook saved successfully", fg="green"))
                     wb.close()
                     click.echo(
                         click.style(
@@ -521,6 +608,26 @@ def append_to_excel(data: dict, filepath: Path):
                     )
                 )
 
+            # VERIFICATION: Check that file exists and has content after save
+            import os
+
+            if filepath.exists():
+                file_size = os.path.getsize(filepath)
+                click.echo(
+                    click.style(
+                        f"✓ File verified: {filepath.name} ({file_size} bytes)",
+                        fg="green",
+                    )
+                )
+            else:
+                click.echo(
+                    click.style(
+                        f"✗ ERROR: File does not exist after save: {filepath}", fg="red"
+                    ),
+                    err=True,
+                )
+
+            click.echo(click.style("=== APPEND_TO_EXCEL SUCCESS ===\n", fg="magenta"))
             return  # Success
 
         except Exception as e:
@@ -749,7 +856,7 @@ async def interact_and_send(
             try:
                 # 1. Clicar no accordion "Chat temporário"
                 chat_temp_accordion = await tab.find(
-                    data_automation_id="newPrivateChatMenuButton", timeout=60
+                    data_automation_id="newPrivateChatMenuButton", timeout=120
                 )
 
                 click.echo(
@@ -765,7 +872,7 @@ async def interact_and_send(
 
                 # 2. Clicar no botão "Chat temporário"
                 chat_temp_button = await tab.find(
-                    data_automation_id="newPrivateChatButton", timeout=60
+                    data_automation_id="newPrivateChatButton", timeout=120
                 )
 
                 await chat_temp_button.click(
@@ -792,7 +899,7 @@ async def interact_and_send(
             click.echo(click.style(f"Abrindo menu de anexos ({filename})", fg="cyan"))
 
             try:
-                plus_menu_btn = await tab.find(data_testid="PlusMenuButton", timeout=60)
+                plus_menu_btn = await tab.find(data_testid="PlusMenuButton", timeout=120)
                 await plus_menu_btn.click(
                     x_offset=random.randint(-5, 5),
                     y_offset=random.randint(-5, 5),
@@ -805,7 +912,7 @@ async def interact_and_send(
 
             async with tab.expect_file_chooser(files=[file_path]):
                 upload_menu_item = await tab.find(
-                    text="Carregar imagens e arquivos", timeout=60
+                    text="Carregar imagens e arquivos", timeout=120
                 )
                 await upload_menu_item.click(
                     x_offset=random.randint(-5, 5),
@@ -824,7 +931,7 @@ async def interact_and_send(
                 raise UploadFailedError("Botão 'Tentar novamente' detectado.")
 
             # Focar chat
-            chat_input = await tab.find(aria_label="Copilot de Mensagens", timeout=60)
+            chat_input = await tab.find(aria_label="Copilot de Mensagens", timeout=120)
 
             await chat_input.click(
                 x_offset=random.randint(-5, 5),
@@ -848,7 +955,7 @@ async def interact_and_send(
             await asyncio.sleep(random.uniform(1.5, 3.0))
 
             # Clicar Enviar
-            send_button = await tab.find(aria_label="Enviar", timeout=60)
+            send_button = await tab.find(aria_label="Enviar", timeout=120)
 
             await send_button.click(
                 x_offset=random.randint(-5, 5),
@@ -861,7 +968,7 @@ async def interact_and_send(
                 click.style(f"Aguardando início da geração ({filename})...", fg="cyan")
             )
             try:
-                await tab.find(aria_label="Interromper geração", timeout=60)
+                await tab.find(aria_label="Interromper geração", timeout=120)
                 click.echo(click.style(f"Geração iniciada ({filename})...", fg="green"))
             except Exception:
                 click.echo(
@@ -941,7 +1048,7 @@ async def wait_and_save(
         if copy_buttons:
             copy_button = copy_buttons[-1]
         else:
-            copy_button = await tab.find(data_testid="CopyButtonTestId", timeout=30)
+            copy_button = await tab.find(data_testid="CopyButtonTestId", timeout=120)
 
         # Small delay before clicking (human-like behavior)
         await asyncio.sleep(random.uniform(0.5, 1.0))
@@ -1056,6 +1163,15 @@ async def process_files_logic(
     name_column: str = "Arquivo",
 ):
     """Lógica principal de orquestração do navegador."""
+    click.echo(click.style("\n" + "=" * 120, fg="blue"))
+    click.echo(click.style("PROCESS_FILES_LOGIC START", fg="blue", bold=True))
+    click.echo(
+        click.style(f"Output file (absolute): {output_file.resolve()}", fg="blue")
+    )
+    click.echo(click.style(f"Output file exists: {output_file.exists()}", fg="blue"))
+    click.echo(click.style(f"Name column: {name_column}", fg="blue"))
+    click.echo(click.style("=" * 120 + "\n", fg="blue"))
+
     if not files:
         click.echo(
             click.style("Nenhum arquivo válido encontrado para processar.", fg="red")
@@ -1063,7 +1179,22 @@ async def process_files_logic(
         return
 
     # Verifica arquivos já processados para retomada
+    click.echo(click.style("Checking for previously processed files...", fg="cyan"))
     processed_filenames = get_processed_filenames(output_file, name_column=name_column)
+
+    click.echo(click.style("\n*** SUMMARY ***", fg="blue", bold=True))
+    click.echo(click.style(f"Total files to check: {len(files)}", fg="blue"))
+    click.echo(
+        click.style(
+            f"Already processed (from Excel): {len(processed_filenames)}", fg="blue"
+        )
+    )
+    if processed_filenames:
+        click.echo(
+            click.style(
+                f"Processed filenames: {sorted(processed_filenames)}", fg="blue"
+            )
+        )
 
     if processed_filenames:
         click.echo(
@@ -1074,8 +1205,42 @@ async def process_files_logic(
         )
 
     # Filtra arquivos que ainda precisam ser processados
-    pending_files = [f for f in files if f.stem not in processed_filenames]
-    skipped_count = len(files) - len(pending_files)
+    click.echo(click.style("\n--- FILTERING DEBUG ---", fg="magenta"))
+    click.echo(click.style(f"Total files to check: {len(files)}", fg="magenta"))
+    click.echo(
+        click.style(
+            f"Sample file stems (first 5): {[f.stem for f in files[:5]]}", fg="magenta"
+        )
+    )
+    click.echo(
+        click.style(
+            f"Sample processed filenames (first 5): {sorted(list(processed_filenames))[:5]}",
+            fg="magenta",
+        )
+    )
+
+    pending_files = []
+    skipped_files = []
+    for f in files:
+        if f.stem in processed_filenames:
+            skipped_files.append(f.name)
+        else:
+            pending_files.append(f)
+
+    skipped_count = len(skipped_files)
+
+    click.echo(click.style("\nFiltered results:", fg="magenta"))
+    click.echo(click.style(f"  Skipped: {len(skipped_files)} files", fg="magenta"))
+    click.echo(click.style(f"  Pending: {len(pending_files)} files", fg="magenta"))
+    if skipped_files[:5]:
+        click.echo(click.style(f"  Sample skipped: {skipped_files[:5]}", fg="magenta"))
+    if pending_files[:5]:
+        click.echo(
+            click.style(
+                f"  Sample pending: {[f.name for f in pending_files[:5]]}", fg="magenta"
+            )
+        )
+    click.echo(click.style("--- END FILTERING DEBUG ---\n", fg="magenta"))
 
     if skipped_count > 0:
         click.echo(
