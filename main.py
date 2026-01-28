@@ -239,12 +239,16 @@ def parse_copilot_response(
     return result
 
 
-def get_or_open_workbook(filepath: Path) -> tuple:
+def get_or_open_workbook(filepath: Path):
     """
     Opens or gets a workbook using xlwings.
-    Returns (workbook, opened_by_us) tuple.
+    Returns (workbook, opened_by_us, app) tuple.
     xlwings handles files that are already open by the user.
     If not open, uses a hidden Excel instance.
+
+    IMPORTANT: Caller is responsible for closing resources:
+    - If opened_by_us=True: Call wb.close() and app.quit()
+    - If opened_by_us=False: Don't close (user has it open)
     """
     abs_path = str(filepath.resolve())
 
@@ -252,23 +256,37 @@ def get_or_open_workbook(filepath: Path) -> tuple:
     try:
         for book in xw.books:
             if book.fullname.lower() == abs_path.lower():
-                return book, False
+                click.echo(
+                    click.style(
+                        f"Using already open workbook: {filepath.name}", fg="cyan"
+                    )
+                )
+                return book, False, None
     except Exception:
         # No active Excel app, will open/create below
         pass
 
     # Not open by user, so open in a hidden Excel instance
-    if filepath.exists():
-        # Open in hidden app
-        app = xw.App(visible=False)
-        wb = app.books.open(abs_path)
-        return wb, True
-    else:
-        # Create new workbook in hidden app and save
-        app = xw.App(visible=False)
-        wb = app.books.add()
-        wb.save(abs_path)
-        return wb, True
+    click.echo(click.style(f"Opening Excel instance for: {filepath.name}", fg="cyan"))
+    app = xw.App(visible=False)
+
+    try:
+        if filepath.exists():
+            # Open in hidden app
+            wb = app.books.open(abs_path)
+            return wb, True, app
+        else:
+            # Create new workbook in hidden app
+            wb = app.books.add()
+            wb.save(abs_path)
+            return wb, True, app
+    except Exception:
+        # If opening fails, clean up the app we created
+        try:
+            app.quit()
+        except Exception:
+            pass
+        raise
 
 
 def get_processed_filenames(filepath: Path, name_column: str = "Arquivo") -> set:
@@ -279,9 +297,10 @@ def get_processed_filenames(filepath: Path, name_column: str = "Arquivo") -> set
     processed = set()
     wb = None
     opened_by_us = False
+    app = None
 
     try:
-        wb, opened_by_us = get_or_open_workbook(filepath)
+        wb, opened_by_us, app = get_or_open_workbook(filepath)
         ws = wb.sheets[0]
 
         # Read all used data
@@ -316,13 +335,29 @@ def get_processed_filenames(filepath: Path, name_column: str = "Arquivo") -> set
             click.style(f"Erro ao ler Excel via xlwings: {e}", fg="red"), err=True
         )
     finally:
-        if opened_by_us and wb:
+        # CRITICAL: Always clean up resources if we opened them
+        if opened_by_us:
             try:
-                app = wb.app
-                wb.close()
-                app.quit()
-            except Exception:
-                pass
+                if wb:
+                    wb.close()
+                    click.echo(
+                        click.style(f"Closed workbook: {filepath.name}", fg="cyan")
+                    )
+            except Exception as e:
+                click.echo(
+                    click.style(f"Warning: Error closing workbook: {e}", fg="yellow"),
+                    err=True,
+                )
+
+            try:
+                if app:
+                    app.quit()
+                    click.echo(click.style("Quit Excel application", fg="cyan"))
+            except Exception as e:
+                click.echo(
+                    click.style(f"Warning: Error quitting Excel app: {e}", fg="yellow"),
+                    err=True,
+                )
 
     return processed
 
@@ -396,15 +431,17 @@ def append_to_excel(data: dict, filepath: Path):
     """
     Adiciona dados ao Excel usando xlwings.
     xlwings handles files open by user seamlessly.
+    Uses proper resource cleanup to prevent zombie Excel processes.
     """
 
     max_retries = 20
     for attempt in range(max_retries):
         wb = None
         opened_by_us = False
+        app = None
 
         try:
-            wb, opened_by_us = get_or_open_workbook(filepath)
+            wb, opened_by_us, app = get_or_open_workbook(filepath)
             ws = wb.sheets[0]
 
             # Find next row using xlwings
@@ -451,12 +488,38 @@ def append_to_excel(data: dict, filepath: Path):
                 try:
                     wb.save()
                     wb.close()
-                    wb.quit()
-                except Exception:
-                    pass
+                    click.echo(
+                        click.style(
+                            f"Saved and closed workbook: {filepath.name}", fg="cyan"
+                        )
+                    )
+                except Exception as e:
+                    click.echo(
+                        click.style(
+                            f"Warning: Error closing workbook: {e}", fg="yellow"
+                        ),
+                        err=True,
+                    )
+
+                try:
+                    if app:
+                        app.quit()
+                        click.echo(click.style("Quit Excel application", fg="cyan"))
+                except Exception as e:
+                    click.echo(
+                        click.style(
+                            f"Warning: Error quitting Excel app: {e}", fg="yellow"
+                        ),
+                        err=True,
+                    )
             else:
                 # For user-opened workbooks, just save in place
                 wb.save()
+                click.echo(
+                    click.style(
+                        f"Saved user-opened workbook: {filepath.name}", fg="cyan"
+                    )
+                )
 
             return  # Success
 
@@ -472,11 +535,16 @@ def append_to_excel(data: dict, filepath: Path):
                 continue
             else:
                 click.echo(f"Erro fatal ao escrever no Excel: {e}", err=True)
-                if opened_by_us and wb:
+                # CRITICAL: Clean up resources even on error
+                if opened_by_us:
                     try:
-                        app = wb.app
-                        wb.close()
-                        app.quit()
+                        if wb:
+                            wb.close()
+                    except Exception:
+                        pass
+                    try:
+                        if app:
+                            app.quit()
                     except Exception:
                         pass
                 raise e
