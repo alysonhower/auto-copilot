@@ -2,7 +2,7 @@
   "version": "7.2.2",
   "integrations": [
     "agents-md",
-    "roocode"
+    "opencode"
   ],
   "templates": {
     "prdQuestions": "default",

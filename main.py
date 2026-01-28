@@ -501,10 +501,65 @@ async def safe_close_tab(tab, timeout: float = 5.0):
         click.echo(click.style(f"Não foi possível fechar aba: {e}", fg="red"), err=True)
 
 
+async def clipboard_write_and_verify(tab, text: str, max_attempts: int = 3) -> bool:
+    """
+    Write text to clipboard and verify it was written correctly.
+
+    Args:
+        tab: The browser tab to operate on
+        text: The text to write to clipboard
+        max_attempts: Maximum number of retry attempts
+
+    Returns:
+        True if clipboard was verified to contain the correct text
+    """
+    for attempt in range(max_attempts):
+        # Write to clipboard
+        await tab.execute_script(f"navigator.clipboard.writeText({json.dumps(text)})")
+        # Wait for clipboard to be populated
+        await asyncio.sleep(random.uniform(0.2, 0.4))
+
+        # Verify clipboard content
+        try:
+            clipboard_result = await tab.execute_script(
+                "return navigator.clipboard.readText()", await_promise=True
+            )
+            actual_text = (
+                clipboard_result.get("result", {}).get("result", {}).get("value", "")
+            )
+
+            if actual_text == text:
+                return True
+            else:
+                click.echo(
+                    click.style(
+                        f"Clipboard verification failed (attempt {attempt + 1}/{max_attempts}): content mismatch",
+                        fg="yellow",
+                    ),
+                    err=True,
+                )
+        except Exception as e:
+            click.echo(
+                click.style(
+                    f"Clipboard verification error (attempt {attempt + 1}/{max_attempts}): {e}",
+                    fg="yellow",
+                ),
+                err=True,
+            )
+
+        if attempt < max_attempts - 1:
+            await asyncio.sleep(random.uniform(0.3, 0.6))
+
+    return False
+
+
 async def clipboard_write_and_paste(tab, text: str, filename: str = ""):
     """
     Write text to clipboard and paste it, with proper locking to prevent
     race conditions when multiple tabs are operating concurrently.
+
+    Includes verification that the clipboard contains the correct content
+    before pasting to prevent issues with async operations overwriting it.
 
     This function acquires the clipboard lock before writing to ensure
     no other tab can interfere with the clipboard content between
@@ -517,20 +572,31 @@ async def clipboard_write_and_paste(tab, text: str, filename: str = ""):
     """
     lock = get_clipboard_lock()
     async with lock:
-        # Write to clipboard
-        await tab.execute_script(
-            f"navigator.clipboard.writeText({json.dumps(text)})"
-        )
-        # Small delay to ensure clipboard write completes
-        await asyncio.sleep(random.uniform(0.1, 0.3))
+        # Verify clipboard has the correct content before pasting
+        verified = await clipboard_write_and_verify(tab, text)
+
+        if not verified:
+            click.echo(
+                click.style(
+                    f"WARNING: Could not verify clipboard content for {filename}. Pasting anyway...",
+                    fg="red",
+                    bold=True,
+                ),
+                err=True,
+            )
+
         # Paste (Ctrl + V)
         await tab.keyboard.hotkey(Key.CONTROL, Key.V)
         # Small delay to ensure paste completes before releasing lock
         await asyncio.sleep(random.uniform(0.1, 0.2))
 
     if filename:
+        status = "✓" if verified else "⚠"
         click.echo(
-            click.style(f"Prompt colado via clipboard ({filename})", fg="cyan")
+            click.style(
+                f"{status} Prompt colado via clipboard ({filename})",
+                fg="cyan" if verified else "yellow",
+            )
         )
 
 
@@ -553,6 +619,10 @@ async def clipboard_click_copy_and_read(tab, copy_button, filename: str = "") ->
     """
     lock = get_clipboard_lock()
     async with lock:
+        # Clear clipboard first to ensure we detect if copy fails
+        await tab.execute_script("navigator.clipboard.writeText('')")
+        await asyncio.sleep(random.uniform(0.1, 0.2))
+
         # Click the copy button with human-like behavior
         await copy_button.click(
             x_offset=random.randint(-5, 5),
@@ -773,8 +843,11 @@ async def wait_and_save(
 ):
     """
     Aguarda a resposta em uma aba já ativa e salva no Excel.
+    Inclui verificação robusta de associação arquivo-resposta.
     """
     filename = file_path.name
+    file_stem = file_path.stem
+
     click.echo(
         click.style(f"Aguardando resposta ({filename}) em segundo plano...", fg="cyan")
     )
@@ -810,35 +883,63 @@ async def wait_and_save(
         response_text = await clipboard_click_copy_and_read(tab, copy_button, filename)
 
         if response_text:
-            attachment_name = file_path.stem
+            # Verify response is not empty or just whitespace
+            stripped_response = response_text.strip()
+            if not stripped_response:
+                click.echo(
+                    click.style(
+                        f"Resposta vazia recebida para {filename}", fg="yellow"
+                    ),
+                    err=True,
+                )
+                return
+
+            # Parse the response
             parsed_data = parse_copilot_response(
                 response_text,
                 tags=tags,
-                filename=attachment_name,
+                filename=file_stem,
                 name_column=name_column,
             )
 
+            # Double-check that the filename is correctly associated
+            if parsed_data.get(name_column) != file_stem:
+                click.echo(
+                    click.style(
+                        f"WARNING: Filename mismatch in parsed data for {filename}. Correcting...",
+                        fg="yellow",
+                    ),
+                    err=True,
+                )
+                parsed_data[name_column] = file_stem
+
             output_file.parent.mkdir(parents=True, exist_ok=True)
 
-            # async with EXCEL_LOCK:
-            # Lock removed for COM
+            # Append to Excel with file association verified
             append_to_excel(parsed_data, output_file)
+
+            # Log success with file association info
+            row_info = f"| {name_column}: {file_stem}"
+            tags_info = f"| Colunas: {len(parsed_data) - 1}"
             click.echo(
                 click.style(
-                    f"Resultados para {filename} salvos em {output_file}", fg="green"
+                    f"✓ Resultados salvos {row_info} {tags_info} | Arquivo: {output_file.name}",
+                    fg="green",
                 )
             )
 
         else:
             click.echo(
                 click.style(
-                    f"Nenhum conteúdo obtido na resposta ({filename})", fg="red"
+                    f"✗ Nenhum conteúdo obtido na resposta ({filename})", fg="red"
                 ),
                 err=True,
             )
 
     except Exception as e:
-        click.echo(f"{e}", err=True)
+        click.echo(
+            click.style(f"✗ Erro ao processar {filename}: {e}", fg="red"), err=True
+        )
 
 
 def resolve_paths(paths: Tuple[str]) -> List[Path]:
@@ -982,6 +1083,9 @@ async def process_files_logic(
         waiting_tasks = []
         first_success = False  # Track if we've had at least one success
 
+        # Track file-tab associations for debugging concurrent operations
+        processing_context = {}  # tab_id -> file_path mapping
+
         try:
             click.echo(
                 click.style(
@@ -1043,11 +1147,22 @@ async def process_files_logic(
                     success = False
 
                 if success:
+                    # Track file-tab association for concurrent monitoring
+                    tab_id = id(tab)
+                    processing_context[tab_id] = file_path
+
+                    click.echo(
+                        click.style(
+                            f"[{i + 1}/{len(pending_files)}] {file_path.name} → Aguardando resposta...",
+                            fg="cyan",
+                        )
+                    )
+
                     # 2. PARTE PARALELA: Aguardar resposta
                     task = asyncio.create_task(
                         wait_and_save(tab, file_path, output_file, tags, name_column)
                     )
-                    waiting_tasks.append((task, tab))
+                    waiting_tasks.append((task, tab, file_path))
                 else:
                     if tab != first_tab:
                         await safe_close_tab(tab)
@@ -1063,24 +1178,29 @@ async def process_files_logic(
                     tasks_to_close = waiting_tasks[:5]
                     waiting_tasks = waiting_tasks[5:]
 
-                    # Separa tasks e tabs
-                    tasks_only = [t for t, _ in tasks_to_close]
-                    tabs_to_close = [tab_ for _, tab_ in tasks_to_close]
+                    # Separa tasks, tabs e file_paths
+                    tasks_only = [t for t, _, _ in tasks_to_close]
+                    tabs_to_close = [tab_ for _, tab_, _ in tasks_to_close]
+                    files_to_close = [fp for _, _, fp in tasks_to_close]
 
                     # Aguarda tasks terminarem
                     await asyncio.gather(*tasks_only, return_exceptions=True)
 
                     # Fecha as abas (simulando humano fechando uma por uma)
-                    for old_tab in tabs_to_close:
+                    for old_tab, old_file in zip(tabs_to_close, files_to_close):
                         if old_tab != first_tab:
                             await safe_close_tab(old_tab)
+                            # Clean up tracking
+                            tab_id = id(old_tab)
+                            if tab_id in processing_context:
+                                del processing_context[tab_id]
                             await asyncio.sleep(random.uniform(1.0, 2.0))
 
                     click.echo("Limpeza de memória concluída (5 abas fechadas).")
 
             if waiting_tasks:
                 click.echo("Todas as solicitações enviadas. Aguardando respostas...")
-                tasks_only = [t for t, _ in waiting_tasks]
+                tasks_only = [t for t, _, _ in waiting_tasks]
                 await asyncio.gather(*tasks_only, return_exceptions=True)
 
         except KeyboardInterrupt:
@@ -1097,7 +1217,7 @@ async def process_files_logic(
 
             click.echo("Limpando abas...")
 
-            all_tabs = [tab for _, tab in waiting_tasks]
+            all_tabs = [tab for _, tab, _ in waiting_tasks]
             if first_tab not in all_tabs:
                 all_tabs.append(first_tab)
 
